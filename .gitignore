@@ -53,3 +53,23 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Autotools generated files (do not commit — run autogen.sh to regenerate)
+/configure
+/Makefile
+/Makefile.in
+/aclocal.m4
+/autom4te.cache/
+/build-aux/
+/stamp-h1
+/config.status
+/config.log
+.deps/
+.libs/
+
+# Old hand-written Makefile output directory (replaced by autotools)
+/build/
+
+# Binaries produced in-tree by autotools
+/claw
+/clawctl
