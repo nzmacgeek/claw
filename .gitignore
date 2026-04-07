@@ -73,3 +73,18 @@ dkms.conf
 # Binaries produced in-tree by autotools
 /claw
 /clawctl
+
+# Build and deployment directories
+/_build-blueyos/
+/_build-standalone/
+/_build-custom/
+/builddir/
+/sysroot-staging/
+/dist/
+
+# Deployment artifacts
+*.dpk
+claw-sysroot-*.tar.gz
+claw-manifest.txt
+MANIFEST.txt
+*.log

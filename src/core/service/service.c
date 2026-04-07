@@ -5,6 +5,7 @@
 
 service_t *service_new(void) {
     service_t *svc = mem_calloc(1, sizeof(service_t));
+    svc->aliases         = vector_new();
     svc->requires        = vector_new();
     svc->wants           = vector_new();
     svc->after           = vector_new();
@@ -52,6 +53,7 @@ void service_free(service_t *svc) {
     free_argv(svc->stop_args);
     free_argv(svc->reload_args);
     free_argv(svc->env);
+    free_str_vector(svc->aliases);
     free_str_vector(svc->requires);
     free_str_vector(svc->wants);
     free_str_vector(svc->after);

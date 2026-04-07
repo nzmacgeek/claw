@@ -1,3 +1,4 @@
+#define _GNU_SOURCE  /* expose vfork() in musl unistd.h */
 #include "supervisor.h"
 #include "mem.h"
 #include "log.h"
@@ -15,6 +16,26 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
+/* Resolve a user name to a uid before forking.
+ * Returns -1 if name is NULL/empty or "root", otherwise the uid.
+ * Must be called in the parent — getpwnam() is not safe after vfork(). */
+static uid_t resolve_uid(const char *user) {
+    if (!user || !*user || strcmp(user, "root") == 0)
+        return (uid_t)-1;
+    struct passwd *pw = getpwnam(user);
+    return pw ? pw->pw_uid : (uid_t)-1;
+}
+
+/* Resolve a group name to a gid before forking.
+ * Returns -1 if name is NULL/empty, otherwise the gid.
+ * Must be called in the parent — getgrnam() is not safe after vfork(). */
+static gid_t resolve_gid(const char *group) {
+    if (!group || !*group)
+        return (gid_t)-1;
+    struct group *gr = getgrnam(group);
+    return gr ? gr->gr_gid : (gid_t)-1;
+}
+
 #define LOG_DIR "/var/log/claw"
 
 /* -----------------------------------------------------------------------
@@ -29,29 +50,18 @@ static int open_service_log(const char *service_name, const char *suffix) {
     return open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
-/* Drop privileges to the given user/group.
- * Called in the child process before exec. */
-static int drop_privileges(const char *user, const char *group) {
-    /* Set group first (need root to change group) */
-    if (group && *group) {
-        struct group *gr = getgrnam(group);
-        if (!gr) {
-            /* Silently continue — group may not exist in embedded env */
-        } else if (setgid(gr->gr_gid) != 0) {
+/* Drop privileges using pre-resolved uid/gid.
+ * Called in the child process before exec.
+ * uid/gid of (uid_t)-1 / (gid_t)-1 means "skip". */
+static int drop_privileges_ids(uid_t uid, gid_t gid) {
+    if (gid != (gid_t)-1) {
+        if (setgid(gid) != 0)
             return -1;
-        }
     }
-
-    if (user && *user && strcmp(user, "root") != 0) {
-        struct passwd *pw = getpwnam(user);
-        if (!pw) {
+    if (uid != (uid_t)-1) {
+        if (setuid(uid) != 0)
             return -1;
-        }
-        if (setuid(pw->pw_uid) != 0) {
-            return -1;
-        }
     }
-
     return 0;
 }
 
@@ -168,13 +178,21 @@ int supervisor_start(supervisor_t *sv, const char *name) {
     int stdout_fd = open_service_log(name, "stdout");
     int stderr_fd = open_service_log(name, "stderr");
 
+    /* Resolve uid/gid before forking — getpwnam/getgrnam use libc
+     * internal state and are not safe to call after vfork(). */
+    uid_t child_uid = resolve_uid(svc->user);
+    gid_t child_gid = resolve_gid(svc->group);
+
     /* Build environment for the child */
     char **env = build_env(svc->env);
 
-    pid_t pid = fork();
+    /* vfork() is used instead of fork() for compatibility with
+     * kernels that refuse clone() with full fork semantics (EPERM).
+     * The child must only make direct syscalls before execve()/_exit(). */
+    pid_t pid = vfork();
 
     if (pid < 0) {
-        log_error("supervisor", "fork() failed for %s: %s", name, strerror(errno));
+        log_error("supervisor", "vfork() failed for %s: %s", name, strerror(errno));
         svc->state = SERVICE_FAILED;
         if (stdout_fd >= 0) close(stdout_fd);
         if (stderr_fd >= 0) close(stderr_fd);
@@ -210,8 +228,8 @@ int supervisor_start(supervisor_t *sv, const char *name) {
             }
         }
 
-        /* Drop privileges */
-        if (drop_privileges(svc->user, svc->group) != 0) {
+        /* Drop privileges using pre-resolved ids */
+        if (drop_privileges_ids(child_uid, child_gid) != 0) {
             const char *msg = "failed to drop privileges\n";
             ssize_t n = write(STDERR_FILENO, msg, 26); (void)n;
             _exit(1);

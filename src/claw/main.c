@@ -391,6 +391,11 @@ static int do_boot(void) {
  * --------------------------------------------------------------------- */
 
 int main(int argc, char *argv[]) {
+    /* PID 1 failures are otherwise hard to diagnose on early bring-up.
+     * Keep stdout/stderr unbuffered so every message reaches the console/log. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     /* Parse arguments: [-C <config_dir>] [-S <socket_path>] */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
@@ -408,9 +413,10 @@ int main(int argc, char *argv[]) {
     fprintf(stdout, "\n");
     fprintf(stdout, "[claw] The Magic Claw awakens...\n");
     fprintf(stdout, "[claw] Choosing who will go first...\n");
+    fprintf(stdout, "[claw] config=%s socket=%s pid=%d\n", g_config_dir, g_socket_path, getpid());
     fprintf(stdout, "\n");
 
-    log_info("init", "Claw " CLAW_VERSION " starting (PID %d)", getpid());
+    log_info("init", "Claw " CLAW_VERSION " (build " CLAW_BUILD_ID ") starting (PID %d)", getpid());
     log_system_state(SYSTEM_INIT);
 
     setup_signal_handlers();

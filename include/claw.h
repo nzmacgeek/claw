@@ -9,6 +9,7 @@
 /* Version */
 #define CLAW_VERSION "0.1.0"
 #define CLAW_VERSION_CODE 0x000100
+#include "claw-build.h"  /* defines CLAW_BUILD_ID, CLAW_BUILD_DIRTY */
 
 /* Logging levels */
 typedef enum {

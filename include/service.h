@@ -39,6 +39,9 @@ typedef struct service {
     /* Environment (array of "KEY=VALUE" strings, NULL-terminated) */
     char **env;
 
+    /* Aliases — alternative names other units may depend on */
+    vector_t *aliases;    /* e.g. "claw-syslog.service" provided by "yap" */
+
     /* Dependencies (string names resolved against the unit hashmap) */
     vector_t *requires;   /* Hard requires — if they fail, this fails */
     vector_t *wants;      /* Soft wants — failures are tolerated */

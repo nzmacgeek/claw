@@ -26,7 +26,7 @@ static void usage(const char *prog) {
         "  reload               Reload daemon configuration\n"
         "  shutdown             Shut the system down\n"
         "\n"
-        "Claw " CLAW_VERSION "\n",
+        "Claw " CLAW_VERSION " (build " CLAW_BUILD_ID ")\n",
         prog, CLAW_SOCKET_PATH);
 }
 

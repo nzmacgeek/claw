@@ -13,13 +13,44 @@ AM_SILENT_RULES([yes])
 dnl ---------------------------------------------------------------------------
 dnl Compiler selection
 dnl Handle --with-musl BEFORE AC_PROG_CC — it reads CC exactly once at call time.
+dnl
+dnl Logic:
+dnl   - If CC is already set in environment, respect it (cross-compiler setup)
+dnl   - If CC is not set, use --with-musl to find musl-gcc
+dnl   - If neither, use system default
 dnl ---------------------------------------------------------------------------
 AC_ARG_WITH([musl],
-  [AS_HELP_STRING([--with-musl],
-    [use musl-gcc as the C compiler (can also set CC=musl-gcc in env)])],
-  [AS_IF([test "x$withval" != "xno"],
-    [CC=musl-gcc
-     AC_MSG_NOTICE([--with-musl: using musl-gcc as compiler])])])
+  [AS_HELP_STRING([--with-musl@<:@=PATH@:>@],
+    [use musl-gcc as the C compiler; optionally specify musl installation path])],
+  [
+    dnl Only apply --with-musl if CC is not already set in environment
+    AS_IF([test -z "$CC"], [
+      AS_IF([test "x$withval" = "xno"], [], [
+        AS_IF([test -z "$withval" -o "x$withval" = "xyes"], [
+          CC=musl-gcc
+          AC_MSG_NOTICE([--with-musl: using musl-gcc from PATH])
+        ], [
+          dnl Check if it's a direct path to musl-gcc
+          AS_IF([test -x "$withval"], [
+            CC="$withval"
+            AC_MSG_NOTICE([--with-musl=$withval: using $CC])
+          ], [
+            dnl Check for /path/bin/musl-gcc
+            AS_IF([test -x "$withval/bin/musl-gcc"], [
+              CC="$withval/bin/musl-gcc"
+              AC_MSG_NOTICE([--with-musl=$withval: using $CC])
+            ], [
+              AC_MSG_ERROR([musl-gcc not found in $withval (tried: $withval, $withval/bin/musl-gcc)])
+            ])
+          ])
+        ])
+      ])
+    ], [
+      AS_IF([test "x$withval" != "xno"], [
+        AC_MSG_NOTICE([CC already set in environment; ignoring --with-musl])
+      ])
+    ])
+  ])
 
 AC_PROG_CC
 AM_PROG_AR

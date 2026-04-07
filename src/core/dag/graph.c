@@ -330,14 +330,40 @@ vector_t *dag_ready_nodes(dag_t *g, hashmap_t *active_set) {
  * Build DAG from a loaded config
  * --------------------------------------------------------------------- */
 
+/* Resolve a name through the alias map; returns the canonical name or name itself */
+static const char *resolve_alias(hashmap_t *alias_map, const char *name) {
+    const char *real = hashmap_get(alias_map, name);
+    return real ? real : name;
+}
+
 int dag_build_from_config(dag_t *g, const config_t *cfg) {
     if (!g || !cfg) return -1;
 
-    /* Add all service nodes */
+    /*
+     * Build alias → canonical-name map from each service's aliases vector.
+     * Only process canonical entries (key == svc->name) to avoid duplicates.
+     */
+    hashmap_t *alias_map = hashmap_new();
+    {
+        size_t tmp_count = 0;
+        char **tmp_keys  = hashmap_keys(cfg->services, &tmp_count);
+        for (size_t i = 0; i < tmp_count; i++) {
+            const service_t *svc = hashmap_get(cfg->services, tmp_keys[i]);
+            if (!svc || strcmp(tmp_keys[i], svc->name) != 0) continue;
+            for (size_t j = 0; j < vector_length(svc->aliases); j++)
+                hashmap_set(alias_map, vector_get(svc->aliases, j), svc->name);
+        }
+        free(tmp_keys);
+    }
+
+    /* Add canonical service nodes (skip alias entries in cfg->services) */
     size_t svc_count = 0;
     char **svc_keys  = hashmap_keys(cfg->services, &svc_count);
+    size_t canonical_svc_count = 0;
     for (size_t i = 0; i < svc_count; i++) {
+        if (hashmap_has(alias_map, svc_keys[i])) continue;  /* skip alias keys */
         dag_add_node(g, svc_keys[i], UNIT_SERVICE);
+        canonical_svc_count++;
     }
     free(svc_keys);
 
@@ -349,44 +375,55 @@ int dag_build_from_config(dag_t *g, const config_t *cfg) {
     }
     free(tgt_keys);
 
-    /* Wire service edges */
+    /* Wire service edges — resolve alias names before adding edges */
     svc_keys = hashmap_keys(cfg->services, &svc_count);
     for (size_t i = 0; i < svc_count; i++) {
         const service_t *svc = hashmap_get(cfg->services, svc_keys[i]);
-        if (!svc) continue;
+        /* Skip alias entries — canonical entry will wire the edges */
+        if (!svc || strcmp(svc_keys[i], svc->name) != 0) continue;
 
         for (size_t j = 0; j < vector_length(svc->requires); j++)
-            dag_add_edge(g, svc->name, vector_get(svc->requires, j), DEP_HARD);
+            dag_add_edge(g, svc->name,
+                         resolve_alias(alias_map, vector_get(svc->requires, j)), DEP_HARD);
         for (size_t j = 0; j < vector_length(svc->wants); j++)
-            dag_add_edge(g, svc->name, vector_get(svc->wants, j), DEP_SOFT);
+            dag_add_edge(g, svc->name,
+                         resolve_alias(alias_map, vector_get(svc->wants, j)), DEP_SOFT);
         for (size_t j = 0; j < vector_length(svc->after); j++)
-            dag_add_edge(g, svc->name, vector_get(svc->after, j), DEP_ORDER);
+            dag_add_edge(g, svc->name,
+                         resolve_alias(alias_map, vector_get(svc->after, j)), DEP_ORDER);
         /* before: X means X must start after me — add reverse ordering edge */
         for (size_t j = 0; j < vector_length(svc->before); j++)
-            dag_add_edge(g, vector_get(svc->before, j), svc->name, DEP_ORDER);
+            dag_add_edge(g, resolve_alias(alias_map, vector_get(svc->before, j)),
+                         svc->name, DEP_ORDER);
     }
     free(svc_keys);
 
-    /* Wire target edges */
+    /* Wire target edges — also resolve aliases */
     tgt_keys = hashmap_keys(cfg->targets, &tgt_count);
     for (size_t i = 0; i < tgt_count; i++) {
         const target_t *tgt = hashmap_get(cfg->targets, tgt_keys[i]);
         if (!tgt) continue;
 
         for (size_t j = 0; j < vector_length(tgt->requires); j++)
-            dag_add_edge(g, tgt->name, vector_get(tgt->requires, j), DEP_HARD);
+            dag_add_edge(g, tgt->name,
+                         resolve_alias(alias_map, vector_get(tgt->requires, j)), DEP_HARD);
         for (size_t j = 0; j < vector_length(tgt->wants); j++)
-            dag_add_edge(g, tgt->name, vector_get(tgt->wants, j), DEP_SOFT);
+            dag_add_edge(g, tgt->name,
+                         resolve_alias(alias_map, vector_get(tgt->wants, j)), DEP_SOFT);
         for (size_t j = 0; j < vector_length(tgt->after); j++)
-            dag_add_edge(g, tgt->name, vector_get(tgt->after, j), DEP_ORDER);
+            dag_add_edge(g, tgt->name,
+                         resolve_alias(alias_map, vector_get(tgt->after, j)), DEP_ORDER);
         /* before: X means X starts after this target */
         for (size_t j = 0; j < vector_length(tgt->before); j++)
-            dag_add_edge(g, vector_get(tgt->before, j), tgt->name, DEP_ORDER);
+            dag_add_edge(g, resolve_alias(alias_map, vector_get(tgt->before, j)),
+                         tgt->name, DEP_ORDER);
     }
     free(tgt_keys);
 
+    hashmap_free_shell(alias_map);
+
     log_info("dag", "Graph built: %zu services + %zu targets",
-             svc_count, tgt_count);
+             canonical_svc_count, tgt_count);
 
     return dag_topo_sort(g);
 }
