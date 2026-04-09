@@ -34,12 +34,12 @@ static dag_t        *g_dag        = NULL;
 static supervisor_t *g_supervisor = NULL;
 static state_db_t   *g_state      = NULL;
 
-#define DEFAULT_CONFIG_DIR "/etc/claw"
-#define STATE_PATH         "/var/lib/claw/state.db"
+#define STATE_DB_FILENAME "state.db"
 
-static const char *g_config_dir  = DEFAULT_CONFIG_DIR;
+static const char *g_config_dir  = NULL;   /* Set from claw_get_paths() or -C flag */
 static const char *g_socket_path = CLAW_SOCKET_PATH;
 static int           g_ipc_fd     = -1;   /* Listening socket */
+static char          g_state_path[512];   /* Built from claw_get_paths()->state_dir */
 
 typedef struct {
     int   single_user;
@@ -399,7 +399,7 @@ static void sync_state(void) {
     }
     free(keys);
     state_db_set_system(g_state, SYSTEM_RUNTIME);
-    state_db_save(g_state, STATE_PATH);
+    state_db_save(g_state, g_state_path);
 }
 
 /* -----------------------------------------------------------------------
@@ -429,7 +429,7 @@ static void do_shutdown(const char *reason) {
         sync_state();
         state_db_mark_shutdown(g_state);
         state_db_set_system(g_state, SYSTEM_SHUTDOWN);
-        state_db_save(g_state, STATE_PATH);
+        state_db_save(g_state, g_state_path);
         state_db_free(g_state);
         g_state = NULL;
     }
@@ -486,7 +486,7 @@ static int do_boot(void) {
 
     /* Load persistent state (detect unclean previous shutdown) */
     g_state = state_db_new();
-    if (state_db_load(g_state, STATE_PATH) == 0) {
+    if (state_db_load(g_state, g_state_path) == 0) {
         state_entry_t *prev = NULL;
         if (!g_state->clean_shutdown && g_state->boot_time > 0) {
             log_warning("boot", "Previous shutdown was NOT clean — checking for failed services");
@@ -583,6 +583,13 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
+    /* Initialise runtime paths.  CLAW_PREFIX can shift all paths for testing
+     * against a staged sysroot.  The -C flag below overrides config_dir. */
+    struct claw_paths *paths = claw_get_paths();
+    g_config_dir = paths->config_dir;
+    snprintf(g_state_path, sizeof(g_state_path),
+             "%s/" STATE_DB_FILENAME, paths->state_dir);
+
     /* Parse arguments: [-C <config_dir>] [-S <socket_path>] */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
@@ -595,7 +602,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    log_init("/var/log/claw", LOG_INFO);
+    log_init(paths->log_dir, LOG_INFO);
 
     fprintf(stdout, "\n");
     fprintf(stdout, "[claw] The Magic Claw awakens...\n");

@@ -67,6 +67,9 @@ dkms.conf
 .deps/
 .libs/
 
+# Generated headers (produced by configure or make)
+/include/claw-version.h
+
 # Old hand-written Makefile output directory (replaced by autotools)
 /build/
 

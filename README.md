@@ -47,12 +47,6 @@ make -j$(nproc)
 make -j$(nproc)
 ```
 
-### Embedded/static musl build
-```bash
-./configure --with-musl --enable-static-binary
-make -j$(nproc)
-```
-
 ### Alpine Linux or other musl-based distributions
 ```bash
 ./configure \

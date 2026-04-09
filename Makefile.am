@@ -25,8 +25,8 @@ AM_CFLAGS = \
 # Uses a .tmp + cmp trick so object files are not invalidated unless the
 # commit ID or dirty flag actually changed.
 # ---------------------------------------------------------------------------
-BUILT_SOURCES = include/claw-build.h
-CLEANFILES    = include/claw-build.h
+BUILT_SOURCES = include/claw-build.h include/claw-version.h
+CLEANFILES    = include/claw-build.h include/claw-version.h
 
 include/claw-build.h: FORCE
 	@$(MKDIR_P) include
@@ -67,6 +67,7 @@ libipc_a_SOURCES = \
 # libcore: daemon-only modules (not linked into clawctl)
 libcore_a_SOURCES = \
 	src/core/config/parser.c \
+	src/core/config/paths.c \
 	src/core/dag/graph.c \
 	src/core/service/service.c \
 	src/core/service/supervisor.c \
@@ -138,9 +139,11 @@ EXTRA_DIST = \
 	DEPLOY.md \
 	MUSL-PATHS.md \
 	LICENSE \
+	include/claw-version.h.in \
 	scripts/build-standalone.sh \
 	scripts/package-dimsim.sh \
-	scripts/deploy.sh
+	scripts/deploy.sh \
+	contrib/install-hooks.sh
 
 # ---------------------------------------------------------------------------
 # Lint target (not part of standard automake check machinery)

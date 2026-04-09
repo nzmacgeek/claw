@@ -115,7 +115,7 @@ AC_SUBST([WARN_CFLAGS])
 dnl ---------------------------------------------------------------------------
 dnl Output
 dnl ---------------------------------------------------------------------------
-AC_CONFIG_FILES([Makefile])
+AC_CONFIG_FILES([Makefile include/claw-version.h])
 AC_OUTPUT
 
 AC_MSG_RESULT([
