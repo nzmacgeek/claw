@@ -6,8 +6,8 @@
 #include <time.h>
 #include <sys/types.h>
 
-/* Version */
-#define CLAW_VERSION "0.1.0"
+/* Version — generated at configure time from claw-version.h.in */
+#include "claw-version.h"
 #define CLAW_VERSION_CODE 0x000100
 #include "claw-build.h"  /* defines CLAW_BUILD_ID, CLAW_BUILD_DIRTY */
 
@@ -105,5 +105,18 @@ typedef enum {
     IPC_RESPONSE = 1,
     IPC_NOTIFICATION = 2
 } ipc_message_type_t;
+
+/* Runtime configuration paths.
+ * Defaults point to the standard install locations.
+ * All paths can be shifted by setting the CLAW_PREFIX environment variable,
+ * which is useful for testing against a staged sysroot. */
+struct claw_paths {
+    const char *config_dir;    /* /etc/claw              */
+    const char *state_dir;     /* /var/lib/claw           */
+    const char *log_dir;       /* /var/log/claw           */
+    const char *run_dir;       /* /run/claw               */
+};
+
+const struct claw_paths *claw_get_paths(void);
 
 #endif /* __CLAW_H__ */

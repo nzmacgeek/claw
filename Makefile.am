@@ -67,6 +67,7 @@ libipc_a_SOURCES = \
 # libcore: daemon-only modules (not linked into clawctl)
 libcore_a_SOURCES = \
 	src/core/config/parser.c \
+	src/core/config/paths.c \
 	src/core/dag/graph.c \
 	src/core/service/service.c \
 	src/core/service/supervisor.c \
@@ -138,9 +139,11 @@ EXTRA_DIST = \
 	DEPLOY.md \
 	MUSL-PATHS.md \
 	LICENSE \
+	include/claw-version.h.in \
 	scripts/build-standalone.sh \
 	scripts/package-dimsim.sh \
-	scripts/deploy.sh
+	scripts/deploy.sh \
+	contrib/install-hooks.sh
 
 # ---------------------------------------------------------------------------
 # Lint target (not part of standard automake check machinery)
@@ -192,10 +195,8 @@ dist-sysroot: install-sysroot
 .PHONY: install-manifest
 install-manifest: install-sysroot
 	@echo "Generating file manifest..."
-	@find $(SYSROOT_STAGING) -type f -exec md5sum {} \; \
-	  | sed "s|$(SYSROOT_STAGING)||" \
-	  | sort > claw-manifest.txt
-	@echo "File manifest: claw-manifest.txt"
+	$(top_srcdir)/contrib/install-hooks.sh $(SYSROOT_STAGING) $(VERSION)
+	@echo "File manifest and metadata written to: $(SYSROOT_STAGING)"
 
 # Verify deployed files match manifest
 .PHONY: verify-manifest
