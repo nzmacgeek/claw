@@ -19,6 +19,9 @@ set -euo pipefail
 DESTDIR="${1:-.}"
 VERSION="${2:-unknown}"
 
+# Normalize: strip any trailing slash so path stripping is consistent
+DESTDIR="${DESTDIR%/}"
+
 if [[ ! -d "$DESTDIR" ]]; then
     echo "error: DESTDIR '$DESTDIR' does not exist" >&2
     exit 1
@@ -36,6 +39,7 @@ find "$DESTDIR" -type f \
     | sort \
     | while read -r file; do
         relpath="${file#"$DESTDIR"}"
+        relpath="${relpath#/}"   # strip leading slash -> true relative path
         md5sum "$file" | awk -v path="$relpath" '{print $1 "  " path}'
     done > "$MANIFEST"
 
@@ -55,7 +59,7 @@ Installed:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Hostname:   $(hostname 2>/dev/null || echo unknown)
 User:       $(whoami 2>/dev/null || echo unknown)
 
-Files:      $(find "$DESTDIR" -type f ! -name METADATA.txt | wc -l)
+Files:      $(find "$DESTDIR" -type f ! -name "MANIFEST.md5" ! -name "METADATA.txt" | wc -l)
 Dirs:       $(find "$DESTDIR" -type d | wc -l)
 EOF
 

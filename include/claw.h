@@ -117,6 +117,6 @@ struct claw_paths {
     const char *run_dir;       /* /run/claw               */
 };
 
-struct claw_paths *claw_get_paths(void);
+const struct claw_paths *claw_get_paths(void);
 
 #endif /* __CLAW_H__ */

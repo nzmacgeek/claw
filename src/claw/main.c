@@ -585,10 +585,16 @@ int main(int argc, char *argv[]) {
 
     /* Initialise runtime paths.  CLAW_PREFIX can shift all paths for testing
      * against a staged sysroot.  The -C flag below overrides config_dir. */
-    struct claw_paths *paths = claw_get_paths();
+    const struct claw_paths *paths = claw_get_paths();
     g_config_dir = paths->config_dir;
-    snprintf(g_state_path, sizeof(g_state_path),
-             "%s/" STATE_DB_FILENAME, paths->state_dir);
+    int state_path_len = snprintf(g_state_path, sizeof(g_state_path),
+                                  "%s/" STATE_DB_FILENAME, paths->state_dir);
+    if (state_path_len < 0 || (size_t)state_path_len >= sizeof(g_state_path)) {
+        fprintf(stderr,
+                "[claw] Failed to initialise state DB path: '%s/%s' does not fit in buffer\n",
+                paths->state_dir, STATE_DB_FILENAME);
+        return 1;
+    }
 
     /* Parse arguments: [-C <config_dir>] [-S <socket_path>] */
     for (int i = 1; i < argc; i++) {

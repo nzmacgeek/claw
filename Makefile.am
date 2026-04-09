@@ -25,8 +25,8 @@ AM_CFLAGS = \
 # Uses a .tmp + cmp trick so object files are not invalidated unless the
 # commit ID or dirty flag actually changed.
 # ---------------------------------------------------------------------------
-BUILT_SOURCES = include/claw-build.h include/claw-version.h
-CLEANFILES    = include/claw-build.h include/claw-version.h
+BUILT_SOURCES = include/claw-build.h
+CLEANFILES    = include/claw-build.h
 
 include/claw-build.h: FORCE
 	@$(MKDIR_P) include
@@ -195,10 +195,8 @@ dist-sysroot: install-sysroot
 .PHONY: install-manifest
 install-manifest: install-sysroot
 	@echo "Generating file manifest..."
-	@find $(SYSROOT_STAGING) -type f -exec md5sum {} \; \
-	  | sed "s|$(SYSROOT_STAGING)||" \
-	  | sort > claw-manifest.txt
-	@echo "File manifest: claw-manifest.txt"
+	$(top_srcdir)/contrib/install-hooks.sh $(SYSROOT_STAGING) $(VERSION)
+	@echo "File manifest and metadata written to: $(SYSROOT_STAGING)"
 
 # Verify deployed files match manifest
 .PHONY: verify-manifest
