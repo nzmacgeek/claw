@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
@@ -38,6 +40,158 @@ static state_db_t   *g_state      = NULL;
 static const char *g_config_dir  = DEFAULT_CONFIG_DIR;
 static const char *g_socket_path = CLAW_SOCKET_PATH;
 static int           g_ipc_fd     = -1;   /* Listening socket */
+
+typedef struct {
+    int   single_user;
+    char *target_override;
+} boot_options_t;
+
+static int is_truthy(const char *value) {
+    return value
+        && (strcmp(value, "1") == 0
+         || strcmp(value, "true") == 0
+         || strcmp(value, "yes") == 0
+         || strcmp(value, "on") == 0);
+}
+
+static int token_requests_single_user(const char *token) {
+    return strcmp(token, "single") == 0
+        || strcmp(token, "s") == 0
+        || strcmp(token, "S") == 0
+        || strcmp(token, "1") == 0
+        || strcmp(token, "rescue") == 0
+        || strcmp(token, "emergency") == 0;
+}
+
+static void load_boot_options(boot_options_t *opts) {
+    if (!opts) return;
+
+    memset(opts, 0, sizeof(*opts));
+
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (!f) {
+        log_debug("boot", "Cannot read /proc/cmdline: %s", strerror(errno));
+        return;
+    }
+
+    char cmdline[4096];
+    if (!fgets(cmdline, sizeof(cmdline), f)) {
+        fclose(f);
+        return;
+    }
+    fclose(f);
+
+    char *saveptr = NULL;
+    for (char *tok = strtok_r(cmdline, " \t\r\n", &saveptr);
+         tok;
+         tok = strtok_r(NULL, " \t\r\n", &saveptr)) {
+        if (token_requests_single_user(tok)) {
+            opts->single_user = 1;
+            continue;
+        }
+
+        if (strncmp(tok, "claw.single=", 12) == 0) {
+            opts->single_user = is_truthy(tok + 12);
+            continue;
+        }
+
+        if (strncmp(tok, "claw.target=", 12) == 0 && tok[12] != '\0') {
+            free(opts->target_override);
+            opts->target_override = mem_strdup(tok + 12);
+        }
+    }
+}
+
+static void free_boot_options(boot_options_t *opts) {
+    if (!opts) return;
+    free(opts->target_override);
+    opts->target_override = NULL;
+}
+
+static int run_single_user_shell(void) {
+    extern char **environ;
+
+    const char *shell_path = "/bin/bash";
+    char *const bash_argv[] = { "bash", "-l", NULL };
+    char *const sh_argv[]   = { "sh", NULL };
+    char *const *shell_argv = bash_argv;
+
+    if (access(shell_path, X_OK) != 0) {
+        if (access("/bin/sh", X_OK) != 0) {
+            log_error("boot", "Single-user shell not available: neither /bin/bash nor /bin/sh exists");
+            return -1;
+        }
+        shell_path = "/bin/sh";
+        shell_argv = sh_argv;
+        log_warning("boot", "/bin/bash not available; falling back to /bin/sh");
+    }
+
+    for (;;) {
+        int console_fd = open("/dev/console", O_RDWR);
+        if (console_fd < 0)
+            console_fd = open("/dev/tty", O_RDWR);
+        if (console_fd < 0) {
+            log_error("boot", "Cannot open a system console for single-user mode: %s",
+                      strerror(errno));
+            return -1;
+        }
+
+        log_info("boot", "Launching single-user shell: %s", shell_path);
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            log_error("boot", "fork() failed for single-user shell: %s", strerror(errno));
+            close(console_fd);
+            return -1;
+        }
+
+        if (pid == 0) {
+            setsid();
+            ioctl(console_fd, TIOCSCTTY, 0);
+            dup2(console_fd, STDIN_FILENO);
+            dup2(console_fd, STDOUT_FILENO);
+            dup2(console_fd, STDERR_FILENO);
+            if (console_fd > STDERR_FILENO)
+                close(console_fd);
+            chdir("/");
+            execve(shell_path, shell_argv, environ);
+            _exit(127);
+        }
+
+        close(console_fd);
+
+        for (;;) {
+            int status = 0;
+            pid_t waited = waitpid(pid, &status, 0);
+            if (waited == pid) {
+                if (WIFEXITED(status)) {
+                    log_warning("boot", "Single-user shell exited with status %d; respawning",
+                                WEXITSTATUS(status));
+                } else if (WIFSIGNALED(status)) {
+                    log_warning("boot", "Single-user shell terminated by signal %d; respawning",
+                                WTERMSIG(status));
+                } else {
+                    log_warning("boot", "Single-user shell exited; respawning");
+                }
+                break;
+            }
+
+            if (waited < 0 && errno == EINTR) {
+                if (g_sig_term || g_sig_int) {
+                    kill(pid, SIGTERM);
+                    waitpid(pid, NULL, 0);
+                    return 0;
+                }
+                continue;
+            }
+
+            if (waited < 0) {
+                log_error("boot", "waitpid() failed for single-user shell: %s", strerror(errno));
+                return -1;
+            }
+        }
+    }
+}
 
 /* -----------------------------------------------------------------------
  * Signal handling
@@ -291,6 +445,8 @@ static void do_shutdown(const char *reason) {
  * --------------------------------------------------------------------- */
 
 static int do_boot(void) {
+    boot_options_t boot_opts;
+
     /* ---- Early OS setup (PID 1 only) ---- */
     if (getpid() == 1) {
         log_boot_stage("os", "Mounting early filesystems");
@@ -306,6 +462,27 @@ static int do_boot(void) {
 
     /* Always create runtime dirs (they can't hurt in test env) */
     os_create_runtime_dirs();
+
+    load_boot_options(&boot_opts);
+
+    if (boot_opts.single_user) {
+        if (boot_opts.target_override) {
+            log_info("boot", "Ignoring claw.target=%s because single-user mode was requested",
+                     boot_opts.target_override);
+        }
+
+        if (getpid() == 1) {
+            log_boot_stage("os", "Mounting /etc/fstab entries");
+            os_mount_fstab();
+        }
+
+        log_warning("boot", "Kernel cmdline requested single-user mode; skipping normal service startup");
+        log_system_state(SYSTEM_BASIC);
+
+        int shell_rc = run_single_user_shell();
+        free_boot_options(&boot_opts);
+        return shell_rc == 0 ? 1 : -1;
+    }
 
     /* Load persistent state (detect unclean previous shutdown) */
     g_state = state_db_new();
@@ -326,6 +503,7 @@ static int do_boot(void) {
     g_config = config_new();
     if (config_load(g_config, g_config_dir) != 0) {
         log_error("boot", "Failed to load configuration");
+        free_boot_options(&boot_opts);
         return -1;
     }
 
@@ -333,6 +511,7 @@ static int do_boot(void) {
     g_dag = dag_new();
     if (dag_build_from_config(g_dag, g_config) != 0) {
         log_error("boot", "Dependency graph has cycles — cannot boot");
+        free_boot_options(&boot_opts);
         return -1;
     }
 
@@ -352,7 +531,13 @@ static int do_boot(void) {
     }
 
     /* Activate the default target */
-    const char *default_target = g_config->default_target;
+    const char *default_target = boot_opts.target_override
+        ? boot_opts.target_override
+        : g_config->default_target;
+    if (boot_opts.target_override) {
+        log_info("boot", "Kernel cmdline overrides default target: %s", default_target);
+    }
+
     if (default_target && *default_target) {
         log_info("boot", "[claw] The Magic Claw chooses: %s", default_target);
 
@@ -379,6 +564,8 @@ static int do_boot(void) {
     } else {
         log_warning("boot", "No default_target set — nothing will be started");
     }
+
+    free_boot_options(&boot_opts);
 
     log_system_state(SYSTEM_RUNTIME);
     fprintf(stdout, "\n[claw] The Magic Claw rests... but watches everything.\n\n");
@@ -421,10 +608,16 @@ int main(int argc, char *argv[]) {
 
     setup_signal_handlers();
 
-    if (do_boot() != 0) {
+    int boot_rc = do_boot();
+    if (boot_rc < 0) {
         log_critical("init", "Boot failed");
         log_cleanup();
         return 1;
+    }
+
+    if (boot_rc > 0) {
+        do_shutdown(g_sig_term ? "SIGTERM" : g_sig_int ? "SIGINT" : "single-user mode exit");
+        return 0;
     }
 
     /* ---- Main event loop ---- */

@@ -98,9 +98,7 @@ clawconfdir        = $(sysconfdir)/claw
 dist_clawconf_DATA = config/claw.conf
 
 clawservicesdir        = $(clawconfdir)/services.d
-dist_clawservices_DATA = \
-	config/services.d/claw-network.service.yml \
-	config/services.d/claw-syslog.service.yml
+dist_clawservices_DATA =
 
 clawtargetsdir        = $(clawconfdir)/targets.d
 dist_clawtargets_DATA = \

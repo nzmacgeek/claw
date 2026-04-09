@@ -170,6 +170,13 @@ Configuration files are installed to `$(sysconfdir)/claw`:
 - `services.d/*.yml` — Service definitions
 - `targets.d/*.yml` — Target definitions (boot stages, synchronization points)
 
+### Kernel Command Line
+
+Claw also accepts one-shot boot overrides from the kernel command line:
+
+- `single`, `s`, `S`, `1`, `rescue`, `emergency`, or `claw.single=1` starts single-user mode and opens a root shell on the system console instead of activating the normal boot target.
+- `claw.target=<target-name>` overrides `default_target` for a single boot.
+
 See [SPEC.md](SPEC.md) for architecture and boot sequence details.
 
 ## Prerequisites & Scripts
