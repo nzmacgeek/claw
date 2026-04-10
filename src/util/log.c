@@ -31,8 +31,34 @@ static const char *level_colors[] = {
 
 static const char *color_reset = "\033[0m";
 
+static int ensure_dir_recursive(const char *path, mode_t mode) {
+    char buf[512];
+    size_t len;
+
+    if (!path || !*path) return -1;
+
+    len = strlen(path);
+    if (len >= sizeof(buf)) return -1;
+
+    strcpy(buf, path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        if (mkdir(buf, 0755) != 0 && errno != EEXIST)
+            return -1;
+        *p = '/';
+    }
+
+    if (mkdir(buf, mode) != 0 && errno != EEXIST)
+        return -1;
+
+    return 0;
+}
+
 int log_init(const char *dir, log_level_t level) {
     if (!dir) return -1;
+
+    log_cleanup();
 
     log_dir = malloc(strlen(dir) + 1);
     if (!log_dir) return -1;
@@ -41,7 +67,7 @@ int log_init(const char *dir, log_level_t level) {
     current_level = level;
 
     /* Create log directory if needed */
-    mkdir(log_dir, 0755);
+    ensure_dir_recursive(log_dir, 0755);
 
     /* Open main log file */
     char log_path[256];
@@ -70,6 +96,10 @@ void log_set_level(log_level_t level) {
 
 log_level_t log_get_level(void) {
     return current_level;
+}
+
+const char *log_get_dir(void) {
+    return log_dir;
 }
 
 static void log_vprintf(log_level_t level, const char *module, const char *fmt, va_list ap) {

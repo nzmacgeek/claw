@@ -17,6 +17,12 @@ A systemd-like init orchestrator written in C, statically linked against musl fo
 
 This builds, stages, and packages as a dimsim `.dpk` package ready for deployment.
 
+To bump the project version before a release:
+
+```bash
+./scripts/bump-version.sh 0.1.1
+```
+
 ### Development Build
 
 For development with debugging symbols:
@@ -43,7 +49,7 @@ make -j$(nproc)
 
 ### Embedded/static musl build
 ```bash
-./configure --with-musl --enable-static-binary
+./configure --with-musl --with-musl-prefix=/opt/musl --with-sysroot=/opt/blueyos-sysroot --enable-static-binary
 make -j$(nproc)
 ```
 
@@ -164,6 +170,8 @@ Configuration files are installed to `$(sysconfdir)/claw`:
 - `services.d/*.yml` — Service definitions
 - `targets.d/*.yml` — Target definitions (boot stages, synchronization points)
 
+The main config can also set `default_working_dir` to define the cwd used for service start, stop, and reload commands when a service does not specify its own `working_dir`.
+
 ### Kernel Command Line
 
 Claw also accepts one-shot boot overrides from the kernel command line:
@@ -189,6 +197,7 @@ See [scripts/README.md](scripts/README.md) for quick reference.
 
 **Key scripts:**
 - `scripts/build-standalone.sh` — Build static musl binary
+- `scripts/bump-version.sh` — Update the project version and version code
 - `scripts/package-dimsim.sh` — Create dimsim .dpk package
 - `scripts/deploy.sh` — Full workflow (build → package → manifest)
 

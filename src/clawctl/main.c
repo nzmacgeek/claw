@@ -7,7 +7,17 @@
 #include "claw.h"
 #include "ipc.h"
 
-static const char *g_socket_path = CLAW_SOCKET_PATH;
+static const char *g_socket_path = NULL;
+static char g_socket_path_buf[512];
+
+static int init_default_socket_path(void) {
+    int n = snprintf(g_socket_path_buf, sizeof(g_socket_path_buf),
+                     "%s/claw.sock", claw_get_paths()->run_dir);
+    if (n < 0 || (size_t)n >= sizeof(g_socket_path_buf))
+        return -1;
+    g_socket_path = g_socket_path_buf;
+    return 0;
+}
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -27,7 +37,7 @@ static void usage(const char *prog) {
         "  shutdown             Shut the system down\n"
         "\n"
         "Claw " CLAW_VERSION " (build " CLAW_BUILD_ID ")\n",
-        prog, CLAW_SOCKET_PATH);
+        prog, g_socket_path ? g_socket_path : CLAW_SOCKET_PATH);
 }
 
 static void build_request(char *buf, size_t len, const char *unit) {
@@ -71,6 +81,11 @@ static int send_command(ipc_command_t cmd, const char *unit) {
 }
 
 int main(int argc, char *argv[]) {
+    if (init_default_socket_path() != 0) {
+        fprintf(stderr, "error: failed to initialise default claw socket path\n");
+        return 1;
+    }
+
     /* Parse optional flags */
     int i = 1;
     while (i < argc && argv[i][0] == '-') {

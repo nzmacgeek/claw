@@ -14,6 +14,20 @@ Quick reference for building, packaging, and deploying Claw to BlueyOS.
 - Configures with musl-gcc and static linking
 - Uses production paths (`/sbin/claw`, `/etc/claw`, etc.)
 - Optional staging installation: `STAGING_DIR=/path ./scripts/build-standalone.sh`
+- Optional toolchain prefix: `MUSL_PREFIX=/opt/musl ./scripts/build-standalone.sh`
+- Optional compiler sysroot: `SYSROOT=/opt/blueyos-sysroot ./scripts/build-standalone.sh`
+
+### `bump-version.sh`
+**Update the project version**
+
+```bash
+./scripts/bump-version.sh X.Y.Z
+```
+
+- Updates the version in `configure.ac`
+- Updates `CLAW_VERSION_CODE` in `include/claw.h`
+- Refreshes `include/claw-version.h` when present
+- Regenerates `configure` if `autoconf` is available
 
 ### `package-dimsim.sh`
 **Create a dimsim .dpk package**
@@ -123,6 +137,20 @@ Directory to stage installation for packaging.
 
 ```bash
 STAGING_DIR=/tmp/claw ./scripts/build-standalone.sh
+```
+
+### `MUSL_PREFIX`
+Prefix containing `bin/musl-gcc`.
+
+```bash
+MUSL_PREFIX=/opt/musl ./scripts/build-standalone.sh
+```
+
+### `SYSROOT`
+Compiler sysroot passed through to `configure` as `--with-sysroot`.
+
+```bash
+SYSROOT=/opt/blueyos-sysroot ./scripts/build-standalone.sh
 ```
 
 ### `CC`

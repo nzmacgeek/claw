@@ -14,6 +14,9 @@ void log_set_level(log_level_t level);
 /* Get current log level */
 log_level_t log_get_level(void);
 
+/* Get the currently configured log directory. */
+const char *log_get_dir(void);
+
 /* Core logging functions */
 void log_debug(const char *module, const char *fmt, ...);
 void log_info(const char *module, const char *fmt, ...);

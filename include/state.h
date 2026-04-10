@@ -8,7 +8,7 @@
  * claw can detect abrupt shutdowns, unclean service states, and past
  * failure counts across reboots.
  *
- * File: /var/lib/claw/state.db  (simple key=value, one per line)
+ * File: <state_dir>/state.db  (simple key=value, one per line)
  * Format:
  *   system.state=RUNTIME
  *   boot.timestamp=1740000000

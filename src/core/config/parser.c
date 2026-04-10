@@ -290,11 +290,13 @@ int config_parse_target(const char *path, target_t *tgt) {
  * --------------------------------------------------------------------- */
 
 config_t *config_new(void) {
+    const struct claw_paths *paths = claw_get_paths();
     config_t *cfg = mem_calloc(1, sizeof(config_t));
     cfg->services      = hashmap_new();
     cfg->targets       = hashmap_new();
     cfg->log_level     = LOG_INFO;
-    cfg->log_dir       = mem_strdup("/var/log/claw");
+    cfg->log_dir       = mem_strdup(paths->log_dir);
+    cfg->default_working_dir = mem_strdup("/");
     cfg->default_target = mem_strdup("claw-multiuser.target");
     return cfg;
 }
@@ -323,6 +325,7 @@ void config_free(config_t *cfg) {
     hashmap_free_shell(cfg->targets);
 
     free(cfg->default_target);
+    free(cfg->default_working_dir);
     free(cfg->log_dir);
     free(cfg);
 }
@@ -343,6 +346,9 @@ static void load_main_conf(config_t *cfg, const char *path) {
         if (strcmp(key, "default_target") == 0) {
             free(cfg->default_target);
             cfg->default_target = mem_strdup(val);
+        } else if (strcmp(key, "default_working_dir") == 0 || strcmp(key, "working_dir") == 0) {
+            free(cfg->default_working_dir);
+            cfg->default_working_dir = mem_strdup(val);
         } else if (strcmp(key, "log_level") == 0) {
             cfg->log_level = parse_log_level(val);
         } else if (strcmp(key, "log_dir") == 0) {
@@ -357,6 +363,12 @@ static void load_main_conf(config_t *cfg, const char *path) {
 static void load_service_file(const char *path, config_t *cfg) {
     service_t *svc = service_new();
     if (config_parse_service(path, svc) == 0) {
+        if ((!svc->working_dir || !*svc->working_dir)
+            && cfg->default_working_dir && *cfg->default_working_dir) {
+            free(svc->working_dir);
+            svc->working_dir = mem_strdup(cfg->default_working_dir);
+        }
+
         hashmap_set(cfg->services, svc->name, svc);
         log_info("config", "Loaded service: %s", svc->name);
         /* Register aliases so dependents can refer to this service by alias */

@@ -37,9 +37,10 @@ static state_db_t   *g_state      = NULL;
 #define STATE_DB_FILENAME "state.db"
 
 static const char *g_config_dir  = NULL;   /* Set from claw_get_paths() or -C flag */
-static const char *g_socket_path = CLAW_SOCKET_PATH;
+static const char *g_socket_path = NULL;
 static int           g_ipc_fd     = -1;   /* Listening socket */
 static char          g_state_path[512];   /* Built from claw_get_paths()->state_dir */
+static char          g_socket_path_buf[512];
 
 typedef struct {
     int   single_user;
@@ -108,6 +109,35 @@ static void free_boot_options(boot_options_t *opts) {
     opts->target_override = NULL;
 }
 
+static int init_default_socket_path(const struct claw_paths *paths) {
+    int n;
+
+    if (!paths || !paths->run_dir)
+        return -1;
+
+    n = snprintf(g_socket_path_buf, sizeof(g_socket_path_buf),
+                 "%s/claw.sock", paths->run_dir);
+    if (n < 0 || (size_t)n >= sizeof(g_socket_path_buf))
+        return -1;
+
+    g_socket_path = g_socket_path_buf;
+    return 0;
+}
+
+static void apply_log_config(void) {
+    const char *log_dir = claw_get_paths()->log_dir;
+    log_level_t level = LOG_INFO;
+
+    if (g_config) {
+        if (g_config->log_dir && *g_config->log_dir)
+            log_dir = g_config->log_dir;
+        level = g_config->log_level;
+    }
+
+    if (log_init(log_dir, level) != 0)
+        log_error("init", "Failed to reinitialize logging for %s", log_dir);
+}
+
 static int run_single_user_shell(void) {
     extern char **environ;
 
@@ -153,7 +183,8 @@ static int run_single_user_shell(void) {
             dup2(console_fd, STDERR_FILENO);
             if (console_fd > STDERR_FILENO)
                 close(console_fd);
-            chdir("/");
+            if (chdir("/") != 0)
+                _exit(126);
             execve(shell_path, shell_argv, environ);
             _exit(127);
         }
@@ -506,6 +537,7 @@ static int do_boot(void) {
         free_boot_options(&boot_opts);
         return -1;
     }
+    apply_log_config();
 
     log_boot_stage("dag", "Building dependency graph");
     g_dag = dag_new();
@@ -587,6 +619,12 @@ int main(int argc, char *argv[]) {
      * against a staged sysroot.  The -C flag below overrides config_dir. */
     const struct claw_paths *paths = claw_get_paths();
     g_config_dir = paths->config_dir;
+    if (init_default_socket_path(paths) != 0) {
+        fprintf(stderr,
+                "[claw] Failed to initialise socket path from %s\n",
+                paths->run_dir ? paths->run_dir : "<null>");
+        return 1;
+    }
     int state_path_len = snprintf(g_state_path, sizeof(g_state_path),
                                   "%s/" STATE_DB_FILENAME, paths->state_dir);
     if (state_path_len < 0 || (size_t)state_path_len >= sizeof(g_state_path)) {
@@ -649,6 +687,7 @@ int main(int argc, char *argv[]) {
             dag_free(g_dag);
             g_config = config_new();
             config_load(g_config, g_config_dir);
+            apply_log_config();
             g_dag = dag_new();
             dag_build_from_config(g_dag, g_config);
             g_supervisor->services = g_config->services;

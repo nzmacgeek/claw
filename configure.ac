@@ -10,47 +10,83 @@ AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall -Werror])
 AM_SILENT_RULES([yes])
 
+dnl Optional musl toolchain prefix and compiler sysroot.
+musl_prefix=""
+AC_ARG_WITH([musl-prefix],
+  [AS_HELP_STRING([--with-musl-prefix=PATH],
+    [prefix containing bin/musl-gcc when using the bundled musl toolchain])],
+  [AS_IF([test "x$withval" = "xno"], [musl_prefix=""], [musl_prefix="$withval"])])
+
+CLAW_SYSROOT=""
+AC_ARG_WITH([sysroot],
+  [AS_HELP_STRING([--with-sysroot=PATH],
+    [pass --sysroot=PATH to the compiler and linker])],
+  [AS_IF([test "x$withval" = "xno"], [CLAW_SYSROOT=""], [CLAW_SYSROOT="$withval"])])
+
+AS_IF([test -n "$CLAW_SYSROOT"], [
+  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
+  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
+  AC_MSG_NOTICE([Using sysroot: $CLAW_SYSROOT])
+])
+
 dnl ---------------------------------------------------------------------------
 dnl Compiler selection
 dnl Handle --with-musl BEFORE AC_PROG_CC — it reads CC exactly once at call time.
 dnl
 dnl Logic:
 dnl   - If CC is already set in environment, respect it (cross-compiler setup)
-dnl   - If CC is not set, use --with-musl to find musl-gcc
+dnl   - If CC is not set, use --with-musl / --with-musl-prefix to find musl-gcc
 dnl   - If neither, use system default
 dnl ---------------------------------------------------------------------------
+want_musl="no"
+musl_locator=""
 AC_ARG_WITH([musl],
   [AS_HELP_STRING([--with-musl@<:@=PATH@:>@],
-    [use musl-gcc as the C compiler; optionally specify musl installation path])],
+    [use musl-gcc as the C compiler; optionally specify a musl-gcc binary or toolchain prefix])],
   [
-    dnl Only apply --with-musl if CC is not already set in environment
-    AS_IF([test -z "$CC"], [
-      AS_IF([test "x$withval" = "xno"], [], [
-        AS_IF([test -z "$withval" -o "x$withval" = "xyes"], [
-          CC=musl-gcc
-          AC_MSG_NOTICE([--with-musl: using musl-gcc from PATH])
+    AS_IF([test "x$withval" = "xno"], [
+      want_musl="no"
+    ], [
+      want_musl="yes"
+      AS_IF([test -n "$withval" && test "x$withval" != "xyes"], [
+        musl_locator="$withval"
+      ])
+    ])
+  ], [])
+
+AS_IF([test -z "$CC"], [
+  AS_IF([test "x$want_musl" = "xyes" || test -n "$musl_prefix"], [
+    AS_IF([test -n "$musl_locator"], [
+      AS_IF([test -x "$musl_locator"], [
+        CC="$musl_locator"
+        AC_MSG_NOTICE([--with-musl=$musl_locator: using $CC])
+      ], [
+        AS_IF([test -x "$musl_locator/bin/musl-gcc"], [
+          CC="$musl_locator/bin/musl-gcc"
+          AC_MSG_NOTICE([--with-musl=$musl_locator: using $CC])
         ], [
-          dnl Check if it's a direct path to musl-gcc
-          AS_IF([test -x "$withval"], [
-            CC="$withval"
-            AC_MSG_NOTICE([--with-musl=$withval: using $CC])
-          ], [
-            dnl Check for /path/bin/musl-gcc
-            AS_IF([test -x "$withval/bin/musl-gcc"], [
-              CC="$withval/bin/musl-gcc"
-              AC_MSG_NOTICE([--with-musl=$withval: using $CC])
-            ], [
-              AC_MSG_ERROR([musl-gcc not found in $withval (tried: $withval, $withval/bin/musl-gcc)])
-            ])
-          ])
+          AC_MSG_ERROR([musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc)])
         ])
       ])
     ], [
-      AS_IF([test "x$withval" != "xno"], [
-        AC_MSG_NOTICE([CC already set in environment; ignoring --with-musl])
+      AS_IF([test -n "$musl_prefix"], [
+        AS_IF([test -x "$musl_prefix/bin/musl-gcc"], [
+          CC="$musl_prefix/bin/musl-gcc"
+          AC_MSG_NOTICE([--with-musl-prefix=$musl_prefix: using $CC])
+        ], [
+          AC_MSG_ERROR([musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc)])
+        ])
+      ], [
+        CC=musl-gcc
+        AC_MSG_NOTICE([--with-musl: using musl-gcc from PATH])
       ])
     ])
   ])
+], [
+  AS_IF([test "x$want_musl" = "xyes" || test -n "$musl_prefix"], [
+    AC_MSG_NOTICE([CC already set in environment; ignoring --with-musl and --with-musl-prefix])
+  ])
+])
 
 AC_PROG_CC
 AM_PROG_AR
@@ -111,6 +147,7 @@ WARN_CFLAGS="-Wall -Wextra"
 AS_IF([test "x$enable_werror" = "xyes"],
   [WARN_CFLAGS="$WARN_CFLAGS -Werror"])
 AC_SUBST([WARN_CFLAGS])
+AC_SUBST([CLAW_SYSROOT])
 
 dnl ---------------------------------------------------------------------------
 dnl Output
@@ -126,6 +163,8 @@ AC_MSG_RESULT([
   compile flags:  -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
   Static binary:  $enable_static_binary
   BINARY_LDFLAGS: $BINARY_LDFLAGS
+  musl prefix:    ${musl_prefix:-'(none)'}
+  sysroot:        ${CLAW_SYSROOT:-'(none)'}
 
   Directories:
   prefix:         $prefix

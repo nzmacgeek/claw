@@ -87,7 +87,9 @@ claw_SOURCES = src/claw/main.c
 claw_LDADD   = libcore.a libipc.a libutil.a
 claw_LDFLAGS = $(BINARY_LDFLAGS)
 
-clawctl_SOURCES = src/clawctl/main.c
+clawctl_SOURCES = \
+	src/clawctl/main.c \
+	src/core/config/paths.c
 clawctl_LDADD   = libipc.a libutil.a
 clawctl_LDFLAGS = $(BINARY_LDFLAGS)
 

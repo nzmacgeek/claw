@@ -13,6 +13,29 @@
 #include <sys/mount.h>
 #include <sys/sysmacros.h>
 
+static int build_prefixed_path(char *buf, size_t size, const char *suffix) {
+    const char *prefix = getenv("CLAW_PREFIX");
+    char prefix_buf[4096];
+    size_t plen;
+    int n;
+
+    if (!prefix || !*prefix) {
+        n = snprintf(buf, size, "%s", suffix);
+        return (n < 0 || (size_t)n >= size) ? -1 : 0;
+    }
+
+    plen = strlen(prefix);
+    if (plen >= sizeof(prefix_buf))
+        return -1;
+
+    memcpy(prefix_buf, prefix, plen + 1);
+    while (plen > 1 && prefix_buf[plen - 1] == '/')
+        prefix_buf[--plen] = '\0';
+
+    n = snprintf(buf, size, "%s%s", prefix_buf, suffix);
+    return (n < 0 || (size_t)n >= size) ? -1 : 0;
+}
+
 /* -----------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------- */
@@ -35,7 +58,30 @@ static int try_mount(const char *source, const char *target,
 
 /* Create directory if it does not exist already */
 static void ensure_dir(const char *path, mode_t mode) {
-    if (mkdir(path, mode) != 0 && errno != EEXIST) {
+    char buf[512];
+    size_t len;
+
+    if (!path || !*path) return;
+
+    len = strlen(path);
+    if (len >= sizeof(buf)) {
+        log_debug("os", "mkdir %s: path too long", path);
+        return;
+    }
+
+    strcpy(buf, path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
+            log_debug("os", "mkdir %s: %s", buf, strerror(errno));
+            *p = '/';
+            return;
+        }
+        *p = '/';
+    }
+
+    if (mkdir(buf, mode) != 0 && errno != EEXIST) {
         log_debug("os", "mkdir %s: %s", path, strerror(errno));
     }
 }
@@ -132,11 +178,20 @@ int os_mount_early(void) {
  * --------------------------------------------------------------------- */
 
 int os_create_runtime_dirs(void) {
-    ensure_dir("/run/claw",  0700);  /* IPC socket — root only */
-    ensure_dir("/run/lock",  0755);
-    ensure_dir("/run/log",   0755);
-    ensure_dir("/var/log/claw", 0750);
-    ensure_dir("/var/lib/claw", 0700);
+    const struct claw_paths *paths = claw_get_paths();
+    char run_lock[512];
+    char run_log[512];
+
+    if (build_prefixed_path(run_lock, sizeof(run_lock), "/run/lock") != 0)
+        strcpy(run_lock, "/run/lock");
+    if (build_prefixed_path(run_log, sizeof(run_log), "/run/log") != 0)
+        strcpy(run_log, "/run/log");
+
+    ensure_dir(paths->run_dir, 0700);  /* IPC socket — root only */
+    ensure_dir(run_lock, 0755);
+    ensure_dir(run_log, 0755);
+    ensure_dir(paths->log_dir, 0750);
+    ensure_dir(paths->state_dir, 0700);
     return 0;
 }
 
@@ -172,28 +227,36 @@ int os_set_hostname(void) {
  * --------------------------------------------------------------------- */
 
 void os_seed_random(void) {
-    const char *seed_file = "/var/lib/claw/random.seed";
+    const struct claw_paths *paths = claw_get_paths();
     char buf[512];
+    char seed_file[512];
+
+    if (snprintf(seed_file, sizeof(seed_file), "%s/random.seed", paths->state_dir)
+        >= (int)sizeof(seed_file)) {
+        log_warning("os", "Random seed path is too long: %s/random.seed", paths->state_dir);
+        return;
+    }
 
     int fd = open(seed_file, O_RDONLY);
     if (fd < 0) {
         log_debug("os", "No random seed file at %s", seed_file);
-        return;
+    } else {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        close(fd);
+
+        if (n > 0) {
+            /* Write seed into kernel entropy pool via /dev/urandom */
+            int urandom = open("/dev/urandom", O_WRONLY);
+            if (urandom >= 0) {
+                ssize_t written = write(urandom, buf, (size_t)n);
+                (void)written;
+                close(urandom);
+                log_info("os", "Seeded kernel PRNG from %s (%zd bytes)", seed_file, n);
+            }
+        }
     }
 
-    ssize_t n = read(fd, buf, sizeof(buf));
-    close(fd);
-
-    if (n <= 0) return;
-
-    /* Write seed into kernel entropy pool via /dev/urandom */
-    int urandom = open("/dev/urandom", O_WRONLY);
-    if (urandom >= 0) {
-        ssize_t written = write(urandom, buf, (size_t)n);
-        (void)written;
-        close(urandom);
-        log_info("os", "Seeded kernel PRNG from %s (%zd bytes)", seed_file, n);
-    }
+    ensure_dir(paths->state_dir, 0700);
 
     /* Refresh the seed file with new random bytes */
     int seed_out = open(seed_file, O_WRONLY | O_CREAT | O_TRUNC, 0600);

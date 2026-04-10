@@ -9,8 +9,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#define STATE_PATH_DEFAULT "/var/lib/claw/state.db"
-
 /* -----------------------------------------------------------------------
  * String conversion helpers
  * --------------------------------------------------------------------- */

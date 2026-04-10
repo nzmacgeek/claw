@@ -36,8 +36,6 @@ static gid_t resolve_gid(const char *group) {
     return gr ? gr->gr_gid : (gid_t)-1;
 }
 
-#define LOG_DIR "/var/log/claw"
-
 /* -----------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------- */
@@ -45,8 +43,13 @@ static gid_t resolve_gid(const char *group) {
 /* Open a per-service log file for capturing stdout/stderr.
  * Returns fd or -1 on error. */
 static int open_service_log(const char *service_name, const char *suffix) {
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s.%s.log", LOG_DIR, service_name, suffix);
+    const char *log_dir = log_get_dir();
+    char path[512];
+
+    if (!log_dir || !*log_dir)
+        log_dir = claw_get_paths()->log_dir;
+
+    snprintf(path, sizeof(path), "%s/%s.%s.log", log_dir, service_name, suffix);
     return open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
@@ -104,6 +107,11 @@ static void free_env(char **env) {
     free(env);
 }
 
+static int change_service_working_dir(const char *working_dir) {
+    if (!working_dir || !*working_dir) return 0;
+    return chdir(working_dir);
+}
+
 /* Build a copy of argv with $MAINPID substituted for the given pid.
  * Returns a newly allocated NULL-terminated array; caller must free_env() it. */
 static char **subst_args(char **args, pid_t pid) {
@@ -156,7 +164,6 @@ int supervisor_start(supervisor_t *sv, const char *name) {
         return -1;
     }
 
-    /* Already running? */
     if (svc->state == SERVICE_ACTIVE || svc->state == SERVICE_ACTIVATING) {
         log_warning("supervisor", "Service already active: %s", name);
         return 0;
@@ -171,26 +178,14 @@ int supervisor_start(supervisor_t *sv, const char *name) {
     log_service_start(name);
     svc->state = SERVICE_ACTIVATING;
 
-    /* oneshot services don't get supervised after exit */
     int is_oneshot = (svc->type == SERVICE_ONESHOT);
-
-    /* Open log files before forking */
     int stdout_fd = open_service_log(name, "stdout");
     int stderr_fd = open_service_log(name, "stderr");
-
-    /* Resolve uid/gid before forking — getpwnam/getgrnam use libc
-     * internal state and are not safe to call after vfork(). */
     uid_t child_uid = resolve_uid(svc->user);
     gid_t child_gid = resolve_gid(svc->group);
-
-    /* Build environment for the child */
     char **env = build_env(svc->env);
 
-    /* vfork() is used instead of fork() for compatibility with
-     * kernels that refuse clone() with full fork semantics (EPERM).
-     * The child must only make direct syscalls before execve()/_exit(). */
     pid_t pid = vfork();
-
     if (pid < 0) {
         log_error("supervisor", "vfork() failed for %s: %s", name, strerror(errno));
         svc->state = SERVICE_FAILED;
@@ -201,9 +196,6 @@ int supervisor_start(supervisor_t *sv, const char *name) {
     }
 
     if (pid == 0) {
-        /* ---- Child process ---- */
-
-        /* Redirect stdout/stderr to log files */
         if (stdout_fd >= 0) {
             dup2(stdout_fd, STDOUT_FILENO);
             close(stdout_fd);
@@ -213,58 +205,45 @@ int supervisor_start(supervisor_t *sv, const char *name) {
             close(stderr_fd);
         }
 
-        /* Close stdin */
         int null_fd = open("/dev/null", O_RDONLY);
         if (null_fd >= 0) {
             dup2(null_fd, STDIN_FILENO);
             close(null_fd);
         }
 
-        /* Change working directory */
-        if (svc->working_dir && *svc->working_dir) {
-            if (chdir(svc->working_dir) != 0) {
-                const char *msg = "chdir failed\n";
-                ssize_t n = write(STDERR_FILENO, msg, 13); (void)n;
-            }
+        if (change_service_working_dir(svc->working_dir) != 0) {
+            const char *msg = "chdir failed\n";
+            ssize_t n = write(STDERR_FILENO, msg, 13); (void)n;
         }
 
-        /* Drop privileges using pre-resolved ids */
         if (drop_privileges_ids(child_uid, child_gid) != 0) {
             const char *msg = "failed to drop privileges\n";
             ssize_t n = write(STDERR_FILENO, msg, 26); (void)n;
             _exit(1);
         }
 
-        /* For forking daemons create a new session */
         if (svc->type == SERVICE_FORKING) {
             setsid();
         }
 
-        /* Replace process image */
         execve(svc->start_cmd, svc->start_args, env);
 
-        /* execve only returns on error */
-        const char *msg = "execve failed\n";
-        ssize_t n = write(STDERR_FILENO, msg, 14); (void)n;
+        {
+            const char *msg = "execve failed\n";
+            ssize_t n = write(STDERR_FILENO, msg, 14); (void)n;
+        }
         _exit(127);
     }
 
-    /* ---- Parent process ---- */
     free_env(env);
     if (stdout_fd >= 0) close(stdout_fd);
     if (stderr_fd >= 0) close(stderr_fd);
 
-    svc->main_pid     = pid;
-    svc->started_at   = time(NULL);
+    svc->main_pid = pid;
+    svc->started_at = time(NULL);
     svc->log_stdout_fd = -1;
     svc->log_stderr_fd = -1;
 
-    /*
-     * For simple services: we consider them ACTIVE immediately and
-     * rely on SIGCHLD to detect failure.
-     * For oneshot: stay ACTIVATING until the process exits.
-     * For forking: stay ACTIVATING until we find the PID file.
-     */
     if (!is_oneshot && svc->type != SERVICE_FORKING) {
         svc->state = SERVICE_ACTIVE;
     }
@@ -294,24 +273,23 @@ int supervisor_stop(supervisor_t *sv, const char *name) {
     log_service_stop(name);
     svc->state = SERVICE_DEACTIVATING;
 
-    /* Use custom stop command if provided */
     if (svc->stop_cmd && svc->stop_args) {
-        char **env  = build_env(svc->env);
+        char **env = build_env(svc->env);
         char **args = subst_args(svc->stop_args, svc->main_pid);
         pid_t pid = fork();
         if (pid == 0) {
+            if (change_service_working_dir(svc->working_dir) != 0)
+                _exit(126);
             execve(svc->stop_cmd, args, env);
             _exit(127);
         }
         free_env(args);
         free_env(env);
         if (pid > 0) {
-            /* Wait for stop command to complete */
             int status;
             waitpid(pid, &status, 0);
         }
     } else if (svc->main_pid > 0) {
-        /* Default: SIGTERM + timeout + SIGKILL */
         kill(svc->main_pid, SIGTERM);
 
         unsigned int timeout = svc->timeout_stop > 0 ? svc->timeout_stop : 10;
@@ -321,11 +299,10 @@ int supervisor_stop(supervisor_t *sv, const char *name) {
             int status;
             pid_t result = waitpid(svc->main_pid, &status, WNOHANG);
             if (result == svc->main_pid) {
-                /* Process exited */
                 svc->exit_code = WIFEXITED(status) ? WEXITSTATUS(status)
                                : 128 + WTERMSIG(status);
                 svc->main_pid = -1;
-                svc->state    = SERVICE_INACTIVE;
+                svc->state = SERVICE_INACTIVE;
                 svc->stopped_at = time(NULL);
                 log_service_stopped(name, svc->exit_code);
                 return 0;
@@ -333,14 +310,13 @@ int supervisor_stop(supervisor_t *sv, const char *name) {
             time_sleep_ms(50);
         }
 
-        /* Timeout — force kill */
         log_warning("supervisor", "Service %s did not stop in time, sending SIGKILL", name);
         kill(svc->main_pid, SIGKILL);
         waitpid(svc->main_pid, NULL, 0);
     }
 
-    svc->main_pid   = -1;
-    svc->state      = SERVICE_INACTIVE;
+    svc->main_pid = -1;
+    svc->state = SERVICE_INACTIVE;
     svc->stopped_at = time(NULL);
     log_service_stopped(name, 0);
     return 0;
@@ -365,17 +341,17 @@ int supervisor_reload(supervisor_t *sv, const char *name) {
     }
 
     if (svc->reload_cmd && svc->reload_args) {
-        /* Run explicit reload command */
         char **env = build_env(svc->env);
         pid_t pid = fork();
         if (pid == 0) {
+            if (change_service_working_dir(svc->working_dir) != 0)
+                _exit(126);
             execve(svc->reload_cmd, svc->reload_args, env);
             _exit(127);
         }
         free_env(env);
         if (pid > 0) waitpid(pid, NULL, 0);
     } else if (svc->main_pid > 0) {
-        /* Default: SIGHUP */
         kill(svc->main_pid, SIGHUP);
     }
 

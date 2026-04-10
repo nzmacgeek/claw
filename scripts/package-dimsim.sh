@@ -26,6 +26,28 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+project_version() {
+    local version=""
+
+    if [[ -f "$PROJECT_ROOT/include/claw-version.h" ]]; then
+        version=$(sed -n 's/^#define CLAW_VERSION "\([^"]*\)"$/\1/p' "$PROJECT_ROOT/include/claw-version.h" | head -n1)
+        if [[ "$version" == "@PACKAGE_VERSION@" ]]; then
+            version=""
+        fi
+    fi
+
+    if [[ -z "$version" && -f "$PROJECT_ROOT/configure.ac" ]]; then
+        version=$(sed -n 's/^AC_INIT(\[claw\], \[\([^]]*\)\].*/\1/p' "$PROJECT_ROOT/configure.ac" | head -n1)
+    fi
+
+    if [[ -z "$version" ]]; then
+        log_error "Unable to determine project version from include/claw-version.h or configure.ac"
+        exit 1
+    fi
+
+    printf '%s\n' "$version"
+}
+
 # --- Verify prerequisites ---
 if ! command -v zstd &> /dev/null; then
     log_error "zstd not found. Install zstandard compression"
@@ -73,7 +95,7 @@ log_info "Generating manifest.json..."
 
 # Package metadata
 PKG_NAME="claw"
-PKG_VERSION="0.1.0"
+PKG_VERSION="$(project_version)"
 PKG_ARCH="x86_64"  # TODO: detect from musl-gcc
 PKG_DESC="Claw init system daemon and control tool for BlueyOS"
 PKG_MAINTAINER="BlueyOS"

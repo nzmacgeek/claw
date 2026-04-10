@@ -10,6 +10,7 @@ typedef struct {
     hashmap_t *services;        /* name → service_t* */
     hashmap_t *targets;         /* name → target_t* */
     char      *default_target;  /* Name of default boot target */
+    char      *default_working_dir; /* Default cwd for service commands */
     char      *log_dir;
     log_level_t log_level;
 } config_t;

@@ -76,13 +76,14 @@ Looks for `musl-gcc` in your `$PATH`.
 
 ### 2. Specify musl Installation Directory
 ```bash
-./configure --with-musl=/path/to/musl --enable-static-binary
+./configure --with-musl --with-musl-prefix=/path/to/musl --enable-static-binary
 make -j$(nproc)
 ```
 
 Automatically searches for gcc in:
 - `/path/to/musl/bin/musl-gcc` (standard layout)
-- `/path/to/musl/musl-gcc` (alternate layout)
+
+If you already know the exact compiler path, continue using `--with-musl=/path/to/musl-gcc`.
 
 ### 3. Specify Direct Path to musl-gcc Binary
 ```bash
@@ -124,6 +125,7 @@ Or with a full sysroot:
 ```bash
 ./configure \
   --with-musl=$BLUEYOS_BUILD/cross/bin/musl-gcc \
+  --with-sysroot=$BLUEYOS_BUILD/sysroot \
   --enable-static-binary \
   --prefix= \
   --sbindir=/sbin \
@@ -157,7 +159,9 @@ mkdir -p _build-blueyos
 cd _build-blueyos
 
 ../configure \
-  --with-musl="$MUSL_PATH" \
+  --with-musl \
+  --with-musl-prefix="$MUSL_PATH" \
+  --with-sysroot="$BLUEYOS_SYSROOT" \
   --enable-static-binary \
   --prefix= \
   --sbindir=/sbin \

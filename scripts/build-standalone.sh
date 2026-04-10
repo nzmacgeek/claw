@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${1:-./_build-blueyos}"
 STAGING_DIR="${STAGING_DIR:-}"
+MUSL_PREFIX="${MUSL_PREFIX:-}"
+SYSROOT="${SYSROOT:-}"
 
 # --- Colors for output ---
 readonly RED='\033[0;31m'
@@ -33,8 +35,13 @@ log_error() {
 }
 
 # --- Verify prerequisites ---
-if ! command -v musl-gcc &> /dev/null; then
-    log_error "musl-gcc not found. Install musl-tools or set CC=musl-gcc"
+if [[ -n "$MUSL_PREFIX" ]]; then
+    if [[ ! -x "$MUSL_PREFIX/bin/musl-gcc" ]]; then
+        log_error "musl-gcc not found under MUSL_PREFIX: $MUSL_PREFIX/bin/musl-gcc"
+        exit 1
+    fi
+elif ! command -v musl-gcc &> /dev/null; then
+    log_error "musl-gcc not found. Install musl-tools or set MUSL_PREFIX/CC accordingly"
     exit 1
 fi
 
@@ -46,6 +53,12 @@ fi
 log_info "Building Claw for BlueyOS (musl, static)"
 log_info "Project root: $PROJECT_ROOT"
 log_info "Build directory: $BUILD_DIR"
+if [[ -n "$MUSL_PREFIX" ]]; then
+    log_info "Musl prefix: $MUSL_PREFIX"
+fi
+if [[ -n "$SYSROOT" ]]; then
+    log_info "Sysroot: $SYSROOT"
+fi
 
 # --- Generate autotools files if needed ---
 if [[ ! -f "$PROJECT_ROOT/configure" ]]; then
@@ -61,16 +74,26 @@ cd "$BUILD_DIR"
 
 # --- Configure for BlueyOS (musl + static, production paths) ---
 log_info "Configuring with musl-gcc..."
-"$PROJECT_ROOT/configure" \
-    --with-musl \
-    --enable-static-binary \
-    --disable-werror \
-    --prefix= \
-    --sbindir=/sbin \
-    --bindir=/bin \
-    --sysconfdir=/etc \
-    --localstatedir=/var \
-    CC=musl-gcc
+configure_args=(
+    --with-musl
+    --enable-static-binary
+    --disable-werror
+    --prefix=
+    --sbindir=/sbin
+    --bindir=/bin
+    --sysconfdir=/etc
+    --localstatedir=/var
+)
+
+if [[ -n "$MUSL_PREFIX" ]]; then
+    configure_args+=("--with-musl-prefix=$MUSL_PREFIX")
+fi
+
+if [[ -n "$SYSROOT" ]]; then
+    configure_args+=("--with-sysroot=$SYSROOT")
+fi
+
+"$PROJECT_ROOT/configure" "${configure_args[@]}"
 
 # --- Build ---
 log_info "Building..."
@@ -91,6 +114,9 @@ else
     ls -lh claw clawctl 2>/dev/null || true
     log_info "To install to a sysroot, re-run with STAGING_DIR set:"
     log_info "  STAGING_DIR=/tmp/claw-sysroot ./scripts/build-standalone.sh"
+    if [[ -z "$SYSROOT" ]]; then
+        log_info "To use a compiler sysroot, set SYSROOT=/path/to/sysroot"
+    fi
 fi
 
 cd - > /dev/null
