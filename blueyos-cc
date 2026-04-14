@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/blueyos-cross/bin/i386-blueyos-elf-gcc -specs=/home/willi/projects/claw/blueyos-cross.specs "$@"

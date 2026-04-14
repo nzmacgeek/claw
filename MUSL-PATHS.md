@@ -1,6 +1,49 @@
 # Specifying musl Location
 
-The build system now supports flexible musl configuration for custom installations (like kernel-integrated musl).
+The build system supports flexible musl/cross-toolchain configuration.
+
+---
+
+## Standard BlueyOS Build (recommended)
+
+Use the `configure-blueyos` convenience wrapper.  It auto-detects the
+`/opt/blueyos-cross` toolchain and `/opt/blueyos-sysroot`, generates a
+GCC specs override in the build directory, and passes `--host=i386-blueyos-elf`
+so autoconf correctly activates cross-compilation mode.
+
+```bash
+# In-source build:
+./configure-blueyos --prefix=/ --sbindir=/sbin --bindir=/bin \
+                    --sysconfdir=/etc --localstatedir=/var
+make -j$(nproc)
+
+# VPATH (out-of-tree) build — recommended:
+mkdir build && cd build
+/path/to/claw/configure-blueyos --prefix=/ --sbindir=/sbin --bindir=/bin \
+                                 --sysconfdir=/etc --localstatedir=/var
+make -j$(nproc)
+```
+
+Auto-detection triggers when **all** of the following are true:
+
+- `/opt/blueyos-cross/bin/i386-blueyos-elf-gcc` is executable
+- `/opt/blueyos-sysroot/usr/include/` exists
+- `CC` is not set in the environment
+- `--with-sysroot` was not passed
+- `--with-musl-prefix` / `--with-musl` was not passed
+
+When detected, configure generates `blueyos-cross.specs` and `blueyos-cc`
+in the build directory.  These encode header paths, startup files, and
+library paths for the `--without-headers` GCC cross-compiler.
+
+To suppress auto-detection:
+
+```bash
+./configure --with-sysroot=no    # use the host compiler
+CC=gcc ./configure               # explicit CC also suppresses it
+```
+
+---
 
 ## BlueyOS i386-blueyos-elf Cross-Compiler
 

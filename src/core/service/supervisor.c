@@ -1,4 +1,4 @@
-#define _GNU_SOURCE  /* expose vfork() in musl unistd.h */
+#define _GNU_SOURCE
 #include "supervisor.h"
 #include "mem.h"
 #include "log.h"
@@ -16,9 +16,9 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
-/* Resolve a user name to a uid before forking.
+/* Resolve a user name to a uid before spawning a child.
  * Returns -1 if name is NULL/empty or "root", otherwise the uid.
- * Must be called in the parent — getpwnam() is not safe after vfork(). */
+ * Must be called in the parent process. */
 static uid_t resolve_uid(const char *user) {
     if (!user || !*user || strcmp(user, "root") == 0)
         return (uid_t)-1;
@@ -26,9 +26,9 @@ static uid_t resolve_uid(const char *user) {
     return pw ? pw->pw_uid : (uid_t)-1;
 }
 
-/* Resolve a group name to a gid before forking.
+/* Resolve a group name to a gid before spawning a child.
  * Returns -1 if name is NULL/empty, otherwise the gid.
- * Must be called in the parent — getgrnam() is not safe after vfork(). */
+ * Must be called in the parent process. */
 static gid_t resolve_gid(const char *group) {
     if (!group || !*group)
         return (gid_t)-1;
@@ -185,9 +185,9 @@ int supervisor_start(supervisor_t *sv, const char *name) {
     gid_t child_gid = resolve_gid(svc->group);
     char **env = build_env(svc->env);
 
-    pid_t pid = vfork();
+    pid_t pid = fork();
     if (pid < 0) {
-        log_error("supervisor", "vfork() failed for %s: %s", name, strerror(errno));
+        log_error("supervisor", "fork() failed for %s: %s", name, strerror(errno));
         svc->state = SERVICE_FAILED;
         if (stdout_fd >= 0) close(stdout_fd);
         if (stderr_fd >= 0) close(stderr_fd);

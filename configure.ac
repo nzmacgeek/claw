@@ -7,55 +7,175 @@ AC_CONFIG_SRCDIR([src/claw/main.c])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIRS([m4])
 
-AM_INIT_AUTOMAKE([foreign subdir-objects -Wall -Werror])
-AM_SILENT_RULES([yes])
+dnl ---------------------------------------------------------------------------
+dnl Parse explicit toolchain / sysroot options BEFORE AM_INIT_AUTOMAKE so that
+dnl the auto-detection code below can respect them, and so that host_alias can
+dnl be set in time for AM_INIT_AUTOMAKE to activate cross-compilation mode.
+dnl ---------------------------------------------------------------------------
 
-dnl Optional musl toolchain prefix and compiler sysroot.
-musl_prefix=""
-AC_ARG_WITH([musl-prefix],
-  [AS_HELP_STRING([--with-musl-prefix=PATH],
-    [prefix containing bin/musl-gcc when using the bundled musl toolchain])],
-  [AS_IF([test "x$withval" = "xno"], [musl_prefix=""], [musl_prefix="$withval"])])
-
+dnl --with-sysroot=PATH — pass --sysroot to the compiler and linker
 CLAW_SYSROOT=""
 AC_ARG_WITH([sysroot],
   [AS_HELP_STRING([--with-sysroot=PATH],
     [pass --sysroot=PATH to the compiler and linker])],
-  [AS_IF([test "x$withval" = "xno"], [CLAW_SYSROOT=""], [CLAW_SYSROOT="$withval"])])
+  [AS_IF([test "x$withval" = "xno"], [CLAW_SYSROOT="disabled"], [CLAW_SYSROOT="$withval"])])
 
-AS_IF([test -n "$CLAW_SYSROOT"], [
+dnl --with-musl-prefix=PATH — bin/musl-gcc under this prefix
+musl_prefix=""
+AC_ARG_WITH([musl-prefix],
+  [AS_HELP_STRING([--with-musl-prefix=PATH],
+    [prefix containing bin/musl-gcc when using a bundled musl toolchain])],
+  [AS_IF([test "x$withval" = "xno"], [musl_prefix=""], [musl_prefix="$withval"])])
+
+dnl --with-musl[=PATH] — use musl-gcc; optional path or toolchain prefix
+want_musl="no"
+musl_locator=""
+AC_ARG_WITH([musl],
+  [AS_HELP_STRING([--with-musl@<:@=PATH@:>@],
+    [use musl-gcc as the C compiler; optionally supply a musl-gcc binary or toolchain prefix])],
+  [AS_IF([test "x$withval" = "xno"], [want_musl="no"], [
+    want_musl="yes"
+    AS_IF([test -n "$withval" -a "x$withval" != "xyes"], [musl_locator="$withval"])
+  ])])
+
+dnl ---------------------------------------------------------------------------
+dnl BlueyOS cross-toolchain auto-detection
+dnl
+dnl Trigger condition: BOTH of these are true
+dnl   1. /opt/blueyos-cross/bin/i386-blueyos-elf-gcc is executable
+dnl   2. /opt/blueyos-sysroot/usr/include/ exists
+dnl AND none of CC, --host, --with-sysroot, --with-musl-prefix have been given.
+dnl
+dnl What it does:
+dnl   • Finds the GCC library directory inside /opt/blueyos-cross
+dnl   • Generates a GCC specs override (blueyos-cross.specs) in the build dir
+dnl     — this fixes startfile names (crt1.o not crt0.o), nostdinc, lib paths
+dnl   • Sets CC, CFLAGS, LDFLAGS, CLAW_SYSROOT
+dnl   • Sets host_alias=i386-blueyos-elf before AM_INIT_AUTOMAKE so that
+dnl     automake correctly activates cross-compilation mode
+dnl
+dnl To disable: pass --with-sysroot=no, set CC, or pass --host explicitly
+dnl ---------------------------------------------------------------------------
+BLUEYOS_CROSS_PREFIX="${BLUEYOS_CROSS:-/opt/blueyos-cross}"
+BLUEYOS_CROSS_DEFAULT_SYSROOT="${BLUEYOS_SYSROOT:-/opt/blueyos-sysroot}"
+BLUEYOS_CROSS_CC="$BLUEYOS_CROSS_PREFIX/bin/i386-blueyos-elf-gcc"
+claw_using_cross_specs="no"
+
+AS_IF([test -z "$CC"],
+  [AS_IF([test -z "$host_alias" -o "x$host_alias" = "xi386-blueyos-elf"],
+    [AS_IF([test "x$CLAW_SYSROOT" != "xdisabled"],
+      [AS_IF([test -z "$musl_prefix" -a "x$want_musl" = "xno"],
+        [AS_IF([test -x "$BLUEYOS_CROSS_CC" -a -d "$BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include"],
+          [dnl Find the GCC library directory (take highest version)
+           blueyos_gcclibdir=""
+           for _bld in "$BLUEYOS_CROSS_PREFIX/lib/gcc/i386-blueyos-elf"/*/; do
+             AS_IF([test -f "${_bld}libgcc.a"], [blueyos_gcclibdir="$_bld"])
+           done
+           blueyos_gcclibdir="${blueyos_gcclibdir%/}"
+
+           AS_IF([test -n "$blueyos_gcclibdir"],
+             [AC_MSG_NOTICE([Auto-detected BlueyOS cross toolchain:])
+              AC_MSG_NOTICE([  compiler : $BLUEYOS_CROSS_CC])
+              AC_MSG_NOTICE([  GCC lib  : $blueyos_gcclibdir])
+              AC_MSG_NOTICE([  sysroot  : $BLUEYOS_CROSS_DEFAULT_SYSROOT])
+              AC_MSG_NOTICE([  (pass --with-sysroot=no or set CC to override)])
+
+              dnl Generate a GCC specs override in the build directory.
+              dnl
+              dnl The cross-compiler was built --without-headers so it has no
+              dnl default sysroot and looks for "crt0.o" (unavailable in musl).
+              dnl This specs file fixes:
+              dnl   *cpp_options / *cc1  — add correct -isystem include dirs
+              dnl   *startfile           — use crt1.o (musl) not crt0.o (glibc)
+              dnl   *link_libgcc         — add sysroot and GCC lib to lib search
+              dnl   *link                — sysroot + -nostdlib
+              cat > blueyos-cross.specs << '_BLUEYOS_SPECS_'
+%rename cpp_options old_cpp_options
+_BLUEYOS_SPECS_
+              cat >> blueyos-cross.specs << _BLUEYOS_SPECS_
+*cpp_options:
+-nostdinc -isystem $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include -isystem $blueyos_gcclibdir/include -isystem include%s %(old_cpp_options)
+
+*cc1:
+%(cc1_cpu) -nostdinc -isystem $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include -isystem $blueyos_gcclibdir/include -isystem include%s
+
+*startfile:
+%{!shared: $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crt1.o} $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crti.o crtbegin.o%s
+
+*endfile:
+crtend.o%s $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crtn.o
+
+*link_libgcc:
+-L$BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib -L$blueyos_gcclibdir -L .%s
+
+*libgcc:
+libgcc.a%s
+
+*link:
+--sysroot=$BLUEYOS_CROSS_DEFAULT_SYSROOT -nostdlib %{shared:-shared} %{static:-static} %{rdynamic:-export-dynamic}
+
+*lib:
+%{!shared:-lc}
+
+*link_ssp:
+
+
+_BLUEYOS_SPECS_
+              dnl Generate a thin compiler wrapper that embeds the -specs= flag.
+              dnl
+              dnl Using a wrapper instead of putting -specs= in CFLAGS/LDFLAGS
+              dnl avoids duplicate loading when autoconf concatenates both into
+              dnl a single compiler invocation during configure probe programs.
+              claw_specs_path="`pwd`/blueyos-cross.specs"
+              claw_cc_wrapper="`pwd`/blueyos-cc"
+              cat > "$claw_cc_wrapper" << _WRAPPER_EOF
+#!/bin/sh
+exec $BLUEYOS_CROSS_CC -specs=$claw_specs_path "\$@"
+_WRAPPER_EOF
+              chmod +x "$claw_cc_wrapper"
+
+              CC="$claw_cc_wrapper"
+              CLAW_SYSROOT="$BLUEYOS_CROSS_DEFAULT_SYSROOT"
+              host_alias="i386-blueyos-elf"
+              dnl Force cross-compilation mode.  host_alias is set above so
+              dnl AC_CANONICAL_HOST will compute host != build, but cross_compiling
+              dnl is also read directly by AC_PROG_CC before that comparison
+              dnl takes effect.  Setting it explicitly here is safe and ensures
+              dnl AC_PROG_CC does not try to run i386 test binaries on the host.
+              cross_compiling=yes
+              claw_using_cross_specs="yes"
+             ],
+             [AC_MSG_WARN([BlueyOS cross compiler found but no GCC libdir under $BLUEYOS_CROSS_PREFIX/lib/gcc/i386-blueyos-elf/; skipping auto-detect])]
+           )
+          ])
+       ])
+    ])
+  ])
+])
+
+dnl Set CLAW_SYSROOT back to empty if it was only set to "disabled" sentinel
+AS_IF([test "x$CLAW_SYSROOT" = "xdisabled"], [CLAW_SYSROOT=""])
+
+AM_INIT_AUTOMAKE([foreign subdir-objects -Wall -Werror])
+AM_SILENT_RULES([yes])
+
+dnl ---------------------------------------------------------------------------
+dnl Apply --sysroot to CFLAGS/LDFLAGS if we're NOT using a specs override
+dnl (specs already encodes --sysroot in the *link spec above)
+dnl ---------------------------------------------------------------------------
+AS_IF([test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"], [
   CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
   LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
   AC_MSG_NOTICE([Using sysroot: $CLAW_SYSROOT])
 ])
 
 dnl ---------------------------------------------------------------------------
-dnl Compiler selection
-dnl Handle --with-musl BEFORE AC_PROG_CC — it reads CC exactly once at call time.
+dnl Compiler selection — musl-gcc locator
 dnl
-dnl Logic:
-dnl   - If CC is already set in environment, respect it (cross-compiler setup)
-dnl   - If CC is not set, use --with-musl / --with-musl-prefix to find musl-gcc
-dnl   - If neither, use system default
+dnl Only runs if CC is still unset (auto-detect or explicit CC have priority).
 dnl ---------------------------------------------------------------------------
-want_musl="no"
-musl_locator=""
-AC_ARG_WITH([musl],
-  [AS_HELP_STRING([--with-musl@<:@=PATH@:>@],
-    [use musl-gcc as the C compiler; optionally specify a musl-gcc binary or toolchain prefix])],
-  [
-    AS_IF([test "x$withval" = "xno"], [
-      want_musl="no"
-    ], [
-      want_musl="yes"
-      AS_IF([test -n "$withval" && test "x$withval" != "xyes"], [
-        musl_locator="$withval"
-      ])
-    ])
-  ], [])
-
 AS_IF([test -z "$CC"], [
-  AS_IF([test "x$want_musl" = "xyes" || test -n "$musl_prefix"], [
+  AS_IF([test "x$want_musl" = "xyes" -o -n "$musl_prefix"], [
     AS_IF([test -n "$musl_locator"], [
       AS_IF([test -x "$musl_locator"], [
         CC="$musl_locator"
@@ -83,8 +203,8 @@ AS_IF([test -z "$CC"], [
     ])
   ])
 ], [
-  AS_IF([test "x$want_musl" = "xyes" || test -n "$musl_prefix"], [
-    AC_MSG_NOTICE([CC already set in environment; ignoring --with-musl and --with-musl-prefix])
+  AS_IF([test "x$want_musl" = "xyes" -o -n "$musl_prefix"], [
+    AC_MSG_NOTICE([CC already set; ignoring --with-musl and --with-musl-prefix])
   ])
 ])
 
@@ -116,16 +236,54 @@ AC_ARG_ENABLE([static-binary],
 
 BINARY_LDFLAGS=""
 AS_IF([test "x$enable_static_binary" = "xyes"],
-  [BINARY_LDFLAGS="-static -lc"
+  [BINARY_LDFLAGS="-static"
    AC_MSG_NOTICE([Static linking enabled (BINARY_LDFLAGS=$BINARY_LDFLAGS)])])
 AC_SUBST([BINARY_LDFLAGS])
+
+dnl ---------------------------------------------------------------------------
+dnl Sysroot/compiler sanity check
+dnl
+dnl A foreign sysroot can compile trivial probe programs while still failing
+dnl at link time if CC targets the host instead of the sysroot. Validate a
+dnl representative libc call here so configure fails with an actionable error.
+dnl ---------------------------------------------------------------------------
+AS_IF([test -n "$CLAW_SYSROOT"], [
+  AC_MSG_CHECKING([whether $CC can link against $CLAW_SYSROOT])
+  claw_save_LDFLAGS="$LDFLAGS"
+  AS_IF([test -n "$BINARY_LDFLAGS"], [
+    LDFLAGS="$LDFLAGS $BINARY_LDFLAGS"
+  ])
+  AC_LINK_IFELSE([
+    AC_LANG_PROGRAM([
+      [#include <time.h>]
+    ], [
+      time_t now = time((time_t *)0);
+      return localtime(&now) == 0;
+    ])
+  ], [
+    AC_MSG_RESULT([yes])
+  ], [
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([
+Compiler/sysroot mismatch for $CLAW_SYSROOT.
+With the BlueyOS cross toolchain this should work automatically.
+If you passed --with-sysroot explicitly, ensure CC targets that sysroot:
+
+  CC=i386-blueyos-elf-gcc ./configure --host=i386-blueyos-elf \\
+      --with-sysroot=/opt/blueyos-sysroot ...
+
+Or let configure auto-detect by omitting CC, --host, --with-sysroot, and
+--with-musl-prefix when /opt/blueyos-cross and /opt/blueyos-sysroot exist.
+])
+  ])
+  LDFLAGS="$claw_save_LDFLAGS"
+])
 
 dnl ---------------------------------------------------------------------------
 dnl Stack-protector probe
 dnl
 dnl -fstack-protector-strong requires GCC >= 4.9.  Fall back gracefully so
-dnl the build works on older or stripped-down toolchains (e.g. some musl cross
-dnl compilers).
+dnl the build works on older or stripped-down toolchains.
 dnl ---------------------------------------------------------------------------
 AX_CHECK_COMPILE_FLAG([-fstack-protector-strong],
   [SECURITY_CFLAGS="-fstack-protector-strong"],
@@ -158,20 +316,24 @@ AC_OUTPUT
 AC_MSG_RESULT([
   Claw $VERSION configured
   -------------------------
-  Compiler:       $CC
-  CFLAGS:         $CFLAGS
-  compile flags:  -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
-  Static binary:  $enable_static_binary
-  BINARY_LDFLAGS: $BINARY_LDFLAGS
-  musl prefix:    ${musl_prefix:-'(none)'}
-  sysroot:        ${CLAW_SYSROOT:-'(none)'}
+  Compiler:         $CC
+  Host:             ${host_alias:-'(native)'}
+  Cross-compile:    $cross_compiling
+  Specs override:   ${claw_using_cross_specs}
+  CFLAGS:           $CFLAGS
+  compile flags:    -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
+  Static binary:    $enable_static_binary
+  BINARY_LDFLAGS:   $BINARY_LDFLAGS
+  musl prefix:      ${musl_prefix:-'(none)'}
+  sysroot:          ${CLAW_SYSROOT:-'(none)'}
 
   Directories:
-  prefix:         $prefix
-  sbindir:        $sbindir
-  bindir:         $bindir
-  sysconfdir:     $sysconfdir
-  localstatedir:  $localstatedir
+  prefix:           $prefix
+  sbindir:          $sbindir
+  bindir:           $bindir
+  sysconfdir:       $sysconfdir
+  localstatedir:    $localstatedir
 
   Run 'make' to build, 'make install' to install.
 ])
+

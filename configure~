@@ -649,6 +649,7 @@ ac_subst_vars='am__EXEEXT_FALSE
 am__EXEEXT_TRUE
 LTLIBOBJS
 LIBOBJS
+CLAW_SYSROOT
 WARN_CFLAGS
 SECURITY_CFLAGS
 BINARY_LDFLAGS
@@ -744,8 +745,10 @@ am__quote'
 ac_subst_files=''
 ac_user_opts='
 enable_option_checking
-enable_silent_rules
+with_sysroot
+with_musl_prefix
 with_musl
+enable_silent_rules
 enable_dependency_tracking
 enable_static_binary
 enable_werror
@@ -1394,8 +1397,11 @@ Optional Features:
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
-  --with-musl[=PATH]      use musl-gcc as the C compiler; optionally specify
-                          musl installation path
+  --with-sysroot=PATH     pass --sysroot=PATH to the compiler and linker
+  --with-musl-prefix=PATH prefix containing bin/musl-gcc when using a bundled
+                          musl toolchain
+  --with-musl[=PATH]      use musl-gcc as the C compiler; optionally supply a
+                          musl-gcc binary or toolchain prefix
 
 Some influential environment variables:
   CC          C compiler command
@@ -1558,6 +1564,53 @@ printf "%s\n" "$ac_res" >&6; }
   eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
 
 } # ac_fn_c_check_header_compile
+
+# ac_fn_c_try_link LINENO
+# -----------------------
+# Try to link conftest.$ac_ext, and return whether this succeeded.
+ac_fn_c_try_link ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  rm -f conftest.$ac_objext conftest.beam conftest$ac_exeext
+  if { { ac_try="$ac_link"
+case "(($ac_try" in
+  *\"* | *\`* | *\\*) ac_try_echo=\$ac_try;;
+  *) ac_try_echo=$ac_try;;
+esac
+eval ac_try_echo="\"\$as_me:${as_lineno-$LINENO}: $ac_try_echo\""
+printf "%s\n" "$ac_try_echo"; } >&5
+  (eval "$ac_link") 2>conftest.err
+  ac_status=$?
+  if test -s conftest.err; then
+    grep -v '^ *+' conftest.err >conftest.er1
+    cat conftest.er1 >&5
+    mv -f conftest.er1 conftest.err
+  fi
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; } && {
+	 test -z "$ac_c_werror_flag" ||
+	 test ! -s conftest.err
+       } && test -s conftest$ac_exeext && {
+	 test "$cross_compiling" = yes ||
+	 test -x conftest$ac_exeext
+       }
+then :
+  ac_retval=0
+else $as_nop
+  printf "%s\n" "$as_me: failed program was:" >&5
+sed 's/^/| /' conftest.$ac_ext >&5
+
+	ac_retval=1
+fi
+  # Delete the IPA/IPO (Inter Procedural Analysis/Optimization) information
+  # created by the PGI compiler (conftest_ipa8_conftest.oo), as it would
+  # interfere with the next link command; also delete a directory that is
+  # left behind by Apple's compiler.  We do this before executing the actions.
+  rm -rf conftest.dSYM conftest_ipa8_conftest.oo
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+  as_fn_set_status $ac_retval
+
+} # ac_fn_c_try_link
 ac_configure_args_raw=
 for ac_arg
 do
@@ -2341,6 +2394,160 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
+
+CLAW_SYSROOT=""
+
+# Check whether --with-sysroot was given.
+if test ${with_sysroot+y}
+then :
+  withval=$with_sysroot; if test "x$withval" = "xno"
+then :
+  CLAW_SYSROOT="disabled"
+else $as_nop
+  CLAW_SYSROOT="$withval"
+fi
+fi
+
+
+musl_prefix=""
+
+# Check whether --with-musl-prefix was given.
+if test ${with_musl_prefix+y}
+then :
+  withval=$with_musl_prefix; if test "x$withval" = "xno"
+then :
+  musl_prefix=""
+else $as_nop
+  musl_prefix="$withval"
+fi
+fi
+
+
+want_musl="no"
+musl_locator=""
+
+# Check whether --with-musl was given.
+if test ${with_musl+y}
+then :
+  withval=$with_musl; if test "x$withval" = "xno"
+then :
+  want_musl="no"
+else $as_nop
+
+    want_musl="yes"
+    if test -n "$withval" -a "x$withval" != "xyes"
+then :
+  musl_locator="$withval"
+fi
+
+fi
+fi
+
+
+BLUEYOS_CROSS_PREFIX="${BLUEYOS_CROSS:-/opt/blueyos-cross}"
+BLUEYOS_CROSS_DEFAULT_SYSROOT="${BLUEYOS_SYSROOT:-/opt/blueyos-sysroot}"
+BLUEYOS_CROSS_CC="$BLUEYOS_CROSS_PREFIX/bin/i386-blueyos-elf-gcc"
+claw_using_cross_specs="no"
+
+if test -z "$CC"
+then :
+  if test -z "$host_alias" -o "x$host_alias" = "xi386-blueyos-elf"
+then :
+  if test "x$CLAW_SYSROOT" != "xdisabled"
+then :
+  if test -z "$musl_prefix" -a "x$want_musl" = "xno"
+then :
+  if test -x "$BLUEYOS_CROSS_CC" -a -d "$BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include"
+then :
+             blueyos_gcclibdir=""
+           for _bld in "$BLUEYOS_CROSS_PREFIX/lib/gcc/i386-blueyos-elf"/*/; do
+             if test -f "${_bld}libgcc.a"
+then :
+  blueyos_gcclibdir="$_bld"
+fi
+           done
+           blueyos_gcclibdir="${blueyos_gcclibdir%/}"
+
+           if test -n "$blueyos_gcclibdir"
+then :
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Auto-detected BlueyOS cross toolchain:" >&5
+printf "%s\n" "$as_me: Auto-detected BlueyOS cross toolchain:" >&6;}
+              { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   compiler : $BLUEYOS_CROSS_CC" >&5
+printf "%s\n" "$as_me:   compiler : $BLUEYOS_CROSS_CC" >&6;}
+              { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   GCC lib  : $blueyos_gcclibdir" >&5
+printf "%s\n" "$as_me:   GCC lib  : $blueyos_gcclibdir" >&6;}
+              { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   sysroot  : $BLUEYOS_CROSS_DEFAULT_SYSROOT" >&5
+printf "%s\n" "$as_me:   sysroot  : $BLUEYOS_CROSS_DEFAULT_SYSROOT" >&6;}
+              { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   (pass --with-sysroot=no or set CC to override)" >&5
+printf "%s\n" "$as_me:   (pass --with-sysroot=no or set CC to override)" >&6;}
+
+                                                                                                                                            cat > blueyos-cross.specs << '_BLUEYOS_SPECS_'
+%rename cpp_options old_cpp_options
+_BLUEYOS_SPECS_
+              cat >> blueyos-cross.specs << _BLUEYOS_SPECS_
+*cpp_options:
+-nostdinc -isystem $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include -isystem $blueyos_gcclibdir/include -isystem include%s %(old_cpp_options)
+
+*cc1:
+%(cc1_cpu) -nostdinc -isystem $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/include -isystem $blueyos_gcclibdir/include -isystem include%s
+
+*startfile:
+%{!shared: $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crt1.o} $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crti.o crtbegin.o%s
+
+*endfile:
+crtend.o%s $BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib/crtn.o
+
+*link_libgcc:
+-L$BLUEYOS_CROSS_DEFAULT_SYSROOT/usr/lib -L$blueyos_gcclibdir -L .%s
+
+*libgcc:
+libgcc.a%s
+
+*link:
+--sysroot=$BLUEYOS_CROSS_DEFAULT_SYSROOT -nostdlib %{shared:-shared} %{static:-static} %{rdynamic:-export-dynamic}
+
+*lib:
+%{!shared:-lc}
+
+*link_ssp:
+
+
+_BLUEYOS_SPECS_
+                                                                                    claw_specs_path="`pwd`/blueyos-cross.specs"
+              claw_cc_wrapper="`pwd`/blueyos-cc"
+              cat > "$claw_cc_wrapper" << _WRAPPER_EOF
+#!/bin/sh
+exec $BLUEYOS_CROSS_CC -specs=$claw_specs_path "\$@"
+_WRAPPER_EOF
+              chmod +x "$claw_cc_wrapper"
+
+              CC="$claw_cc_wrapper"
+              CLAW_SYSROOT="$BLUEYOS_CROSS_DEFAULT_SYSROOT"
+              host_alias="i386-blueyos-elf"
+                                                                                    cross_compiling=yes
+              claw_using_cross_specs="yes"
+
+else $as_nop
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: BlueyOS cross compiler found but no GCC libdir under $BLUEYOS_CROSS_PREFIX/lib/gcc/i386-blueyos-elf/; skipping auto-detect" >&5
+printf "%s\n" "$as_me: WARNING: BlueyOS cross compiler found but no GCC libdir under $BLUEYOS_CROSS_PREFIX/lib/gcc/i386-blueyos-elf/; skipping auto-detect" >&2;}
+
+fi
+
+fi
+
+fi
+
+fi
+
+fi
+
+fi
+
+if test "x$CLAW_SYSROOT" = "xdisabled"
+then :
+  CLAW_SYSROOT=""
+fi
+
 am__api_version='1.16'
 
 
@@ -3000,55 +3207,90 @@ fi
 AM_BACKSLASH='\'
 
 
+if test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"
+then :
 
-# Check whether --with-musl was given.
-if test ${with_musl+y}
+  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
+  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Using sysroot: $CLAW_SYSROOT" >&5
+printf "%s\n" "$as_me: Using sysroot: $CLAW_SYSROOT" >&6;}
+
+fi
+
+if test -z "$CC"
 then :
-  withval=$with_musl;
-    if test "x$withval" = "xno"
+
+  if test "x$want_musl" = "xyes" -o -n "$musl_prefix"
 then :
+
+    if test -n "$musl_locator"
+then :
+
+      if test -x "$musl_locator"
+then :
+
+        CC="$musl_locator"
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$musl_locator: using $CC" >&5
+printf "%s\n" "$as_me: --with-musl=$musl_locator: using $CC" >&6;}
 
 else $as_nop
 
-      if test -z "$withval" -o "x$withval" = "xyes"
+        if test -x "$musl_locator/bin/musl-gcc"
 then :
+
+          CC="$musl_locator/bin/musl-gcc"
+          { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$musl_locator: using $CC" >&5
+printf "%s\n" "$as_me: --with-musl=$musl_locator: using $CC" >&6;}
+
+else $as_nop
+
+          as_fn_error $? "musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc)" "$LINENO" 5
+
+fi
+
+fi
+
+else $as_nop
+
+      if test -n "$musl_prefix"
+then :
+
+        if test -x "$musl_prefix/bin/musl-gcc"
+then :
+
+          CC="$musl_prefix/bin/musl-gcc"
+          { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl-prefix=$musl_prefix: using $CC" >&5
+printf "%s\n" "$as_me: --with-musl-prefix=$musl_prefix: using $CC" >&6;}
+
+else $as_nop
+
+          as_fn_error $? "musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc)" "$LINENO" 5
+
+fi
+
+else $as_nop
 
         CC=musl-gcc
         { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl: using musl-gcc from PATH" >&5
 printf "%s\n" "$as_me: --with-musl: using musl-gcc from PATH" >&6;}
 
+fi
+
+fi
+
+fi
+
 else $as_nop
 
-                if test -x "$withval"
+  if test "x$want_musl" = "xyes" -o -n "$musl_prefix"
 then :
 
-          CC="$withval"
-          { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$withval: using $CC" >&5
-printf "%s\n" "$as_me: --with-musl=$withval: using $CC" >&6;}
-
-else $as_nop
-
-                    if test -x "$withval/bin/musl-gcc"
-then :
-
-            CC="$withval/bin/musl-gcc"
-            { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$withval: using $CC" >&5
-printf "%s\n" "$as_me: --with-musl=$withval: using $CC" >&6;}
-
-else $as_nop
-
-            as_fn_error $? "musl-gcc not found in $withval (tried: $withval, $withval/bin/musl-gcc)" "$LINENO" 5
+    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: CC already set; ignoring --with-musl and --with-musl-prefix" >&5
+printf "%s\n" "$as_me: CC already set; ignoring --with-musl and --with-musl-prefix" >&6;}
 
 fi
 
 fi
-
-fi
-
-fi
-
-fi
-
 
 
 
@@ -4704,11 +4946,70 @@ fi
 BINARY_LDFLAGS=""
 if test "x$enable_static_binary" = "xyes"
 then :
-  BINARY_LDFLAGS="-static -lc"
+  BINARY_LDFLAGS="-static"
    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Static linking enabled (BINARY_LDFLAGS=$BINARY_LDFLAGS)" >&5
 printf "%s\n" "$as_me: Static linking enabled (BINARY_LDFLAGS=$BINARY_LDFLAGS)" >&6;}
 fi
 
+
+if test -n "$CLAW_SYSROOT"
+then :
+
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether $CC can link against $CLAW_SYSROOT" >&5
+printf %s "checking whether $CC can link against $CLAW_SYSROOT... " >&6; }
+  claw_save_LDFLAGS="$LDFLAGS"
+  if test -n "$BINARY_LDFLAGS"
+then :
+
+    LDFLAGS="$LDFLAGS $BINARY_LDFLAGS"
+
+fi
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+
+      #include <time.h>
+
+int
+main (void)
+{
+
+      time_t now = time((time_t *)0);
+      return localtime(&now) == 0;
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+
+    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+
+else $as_nop
+
+    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+    as_fn_error $? "
+Compiler/sysroot mismatch for $CLAW_SYSROOT.
+With the BlueyOS cross toolchain this should work automatically.
+If you passed --with-sysroot explicitly, ensure CC targets that sysroot:
+
+  CC=i386-blueyos-elf-gcc ./configure --host=i386-blueyos-elf \\
+      --with-sysroot=/opt/blueyos-sysroot ...
+
+Or let configure auto-detect by omitting CC, --host, --with-sysroot, and
+--with-musl-prefix when /opt/blueyos-cross and /opt/blueyos-sysroot exist.
+" "$LINENO" 5
+
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+  LDFLAGS="$claw_save_LDFLAGS"
+
+fi
 
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether C compiler accepts -fstack-protector-strong" >&5
 printf %s "checking whether C compiler accepts -fstack-protector-strong... " >&6; }
@@ -4768,7 +5069,8 @@ then :
 fi
 
 
-ac_config_files="$ac_config_files Makefile"
+
+ac_config_files="$ac_config_files Makefile include/claw-version.h"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -5508,6 +5810,7 @@ do
   case $ac_config_target in
     "depfiles") CONFIG_COMMANDS="$CONFIG_COMMANDS depfiles" ;;
     "Makefile") CONFIG_FILES="$CONFIG_FILES Makefile" ;;
+    "include/claw-version.h") CONFIG_FILES="$CONFIG_FILES include/claw-version.h" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
   esac
@@ -6075,37 +6378,48 @@ fi
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result:
   Claw $VERSION configured
   -------------------------
-  Compiler:       $CC
-  CFLAGS:         $CFLAGS
-  compile flags:  -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
-  Static binary:  $enable_static_binary
-  BINARY_LDFLAGS: $BINARY_LDFLAGS
+  Compiler:         $CC
+  Host:             ${host_alias:-'(native)'}
+  Cross-compile:    $cross_compiling
+  Specs override:   ${claw_using_cross_specs}
+  CFLAGS:           $CFLAGS
+  compile flags:    -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
+  Static binary:    $enable_static_binary
+  BINARY_LDFLAGS:   $BINARY_LDFLAGS
+  musl prefix:      ${musl_prefix:-'(none)'}
+  sysroot:          ${CLAW_SYSROOT:-'(none)'}
 
   Directories:
-  prefix:         $prefix
-  sbindir:        $sbindir
-  bindir:         $bindir
-  sysconfdir:     $sysconfdir
-  localstatedir:  $localstatedir
+  prefix:           $prefix
+  sbindir:          $sbindir
+  bindir:           $bindir
+  sysconfdir:       $sysconfdir
+  localstatedir:    $localstatedir
 
   Run 'make' to build, 'make install' to install.
 " >&5
 printf "%s\n" "
   Claw $VERSION configured
   -------------------------
-  Compiler:       $CC
-  CFLAGS:         $CFLAGS
-  compile flags:  -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
-  Static binary:  $enable_static_binary
-  BINARY_LDFLAGS: $BINARY_LDFLAGS
+  Compiler:         $CC
+  Host:             ${host_alias:-'(native)'}
+  Cross-compile:    $cross_compiling
+  Specs override:   ${claw_using_cross_specs}
+  CFLAGS:           $CFLAGS
+  compile flags:    -std=c99 $WARN_CFLAGS $SECURITY_CFLAGS
+  Static binary:    $enable_static_binary
+  BINARY_LDFLAGS:   $BINARY_LDFLAGS
+  musl prefix:      ${musl_prefix:-'(none)'}
+  sysroot:          ${CLAW_SYSROOT:-'(none)'}
 
   Directories:
-  prefix:         $prefix
-  sbindir:        $sbindir
-  bindir:         $bindir
-  sysconfdir:     $sysconfdir
-  localstatedir:  $localstatedir
+  prefix:           $prefix
+  sbindir:          $sbindir
+  bindir:           $bindir
+  sysconfdir:       $sysconfdir
+  localstatedir:    $localstatedir
 
   Run 'make' to build, 'make install' to install.
 " >&6; }
+
 

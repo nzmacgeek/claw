@@ -39,8 +39,8 @@ const struct claw_paths *claw_get_paths(void) {
     size_t plen = strlen(raw_prefix);
     if (plen >= sizeof(prefix_buf)) {
         fprintf(stderr,
-                "[claw] CLAW_PREFIX too long (%zu bytes); ignoring and using defaults\n",
-                plen);
+                "[claw] CLAW_PREFIX too long (%llu bytes); ignoring and using defaults\n",
+                (unsigned long long)plen);
         return &_default_paths;
     }
     memcpy(prefix_buf, raw_prefix, plen + 1);
