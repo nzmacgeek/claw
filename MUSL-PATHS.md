@@ -125,6 +125,9 @@ make -j$(nproc)
 
 Automatically searches for gcc in:
 - `/path/to/musl/bin/musl-gcc` (standard layout)
+- `/path/to/musl/usr/bin/musl-gcc` (sysroot-style layout)
+
+If your BlueyOS sysroot already contains the compiler, `--with-musl-prefix=/opt/blueyos-sysroot` now resolves `/opt/blueyos-sysroot/usr/bin/musl-gcc` and infers `--with-sysroot=/opt/blueyos-sysroot` automatically.
 
 If you already know the exact compiler path, continue using `--with-musl=/path/to/musl-gcc`.
 
@@ -182,7 +185,7 @@ Or with a full sysroot:
 If the specified path doesn't exist or doesn't contain musl-gcc:
 
 ```
-configure: error: musl-gcc not found in /invalid/path (tried: /invalid/path/bin/musl-gcc, /invalid/path/musl-gcc)
+configure: error: musl-gcc not found in /invalid/path (tried: /invalid/path, /invalid/path/bin/musl-gcc, /invalid/path/usr/bin/musl-gcc)
 ```
 
 Check your path and try again.

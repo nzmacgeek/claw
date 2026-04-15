@@ -20,19 +20,19 @@ AC_ARG_WITH([sysroot],
     [pass --sysroot=PATH to the compiler and linker])],
   [AS_IF([test "x$withval" = "xno"], [CLAW_SYSROOT="disabled"], [CLAW_SYSROOT="$withval"])])
 
-dnl --with-musl-prefix=PATH — bin/musl-gcc under this prefix
+dnl --with-musl-prefix=PATH — musl-gcc under PATH/bin or PATH/usr/bin
 musl_prefix=""
 AC_ARG_WITH([musl-prefix],
   [AS_HELP_STRING([--with-musl-prefix=PATH],
-    [prefix containing bin/musl-gcc when using a bundled musl toolchain])],
+    [prefix containing musl-gcc under bin/ or usr/bin/ when using a bundled musl toolchain])],
   [AS_IF([test "x$withval" = "xno"], [musl_prefix=""], [musl_prefix="$withval"])])
 
-dnl --with-musl[=PATH] — use musl-gcc; optional path or toolchain prefix
+dnl --with-musl[=PATH] — use musl-gcc; optional binary, toolchain prefix, or sysroot root
 want_musl="no"
 musl_locator=""
 AC_ARG_WITH([musl],
   [AS_HELP_STRING([--with-musl@<:@=PATH@:>@],
-    [use musl-gcc as the C compiler; optionally supply a musl-gcc binary or toolchain prefix])],
+    [use musl-gcc as the C compiler; optionally supply a musl-gcc binary, toolchain prefix, or sysroot root])],
   [AS_IF([test "x$withval" = "xno"], [want_musl="no"], [
     want_musl="yes"
     AS_IF([test -n "$withval" -a "x$withval" != "xyes"], [musl_locator="$withval"])
@@ -160,16 +160,6 @@ AM_INIT_AUTOMAKE([foreign subdir-objects -Wall -Werror])
 AM_SILENT_RULES([yes])
 
 dnl ---------------------------------------------------------------------------
-dnl Apply --sysroot to CFLAGS/LDFLAGS if we're NOT using a specs override
-dnl (specs already encodes --sysroot in the *link spec above)
-dnl ---------------------------------------------------------------------------
-AS_IF([test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"], [
-  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
-  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
-  AC_MSG_NOTICE([Using sysroot: $CLAW_SYSROOT])
-])
-
-dnl ---------------------------------------------------------------------------
 dnl Compiler selection — musl-gcc locator
 dnl
 dnl Only runs if CC is still unset (auto-detect or explicit CC have priority).
@@ -177,24 +167,38 @@ dnl ---------------------------------------------------------------------------
 AS_IF([test -z "$CC"], [
   AS_IF([test "x$want_musl" = "xyes" -o -n "$musl_prefix"], [
     AS_IF([test -n "$musl_locator"], [
-      AS_IF([test -x "$musl_locator"], [
-        CC="$musl_locator"
+      claw_musl_candidate=""
+      for claw_try in \
+        "$musl_locator" \
+        "$musl_locator/bin/musl-gcc" \
+        "$musl_locator/usr/bin/musl-gcc"; do
+        AS_IF([test -x "$claw_try"], [
+          claw_musl_candidate="$claw_try"
+          break
+        ])
+      done
+      AS_IF([test -n "$claw_musl_candidate"], [
+        CC="$claw_musl_candidate"
         AC_MSG_NOTICE([--with-musl=$musl_locator: using $CC])
       ], [
-        AS_IF([test -x "$musl_locator/bin/musl-gcc"], [
-          CC="$musl_locator/bin/musl-gcc"
-          AC_MSG_NOTICE([--with-musl=$musl_locator: using $CC])
-        ], [
-          AC_MSG_ERROR([musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc)])
-        ])
+        AC_MSG_ERROR([musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc, $musl_locator/usr/bin/musl-gcc)])
       ])
     ], [
       AS_IF([test -n "$musl_prefix"], [
-        AS_IF([test -x "$musl_prefix/bin/musl-gcc"], [
-          CC="$musl_prefix/bin/musl-gcc"
+        claw_musl_candidate=""
+        for claw_try in \
+          "$musl_prefix/bin/musl-gcc" \
+          "$musl_prefix/usr/bin/musl-gcc"; do
+          AS_IF([test -x "$claw_try"], [
+            claw_musl_candidate="$claw_try"
+            break
+          ])
+        done
+        AS_IF([test -n "$claw_musl_candidate"], [
+          CC="$claw_musl_candidate"
           AC_MSG_NOTICE([--with-musl-prefix=$musl_prefix: using $CC])
         ], [
-          AC_MSG_ERROR([musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc)])
+          AC_MSG_ERROR([musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc, $musl_prefix/usr/bin/musl-gcc)])
         ])
       ], [
         CC=musl-gcc
@@ -206,6 +210,33 @@ AS_IF([test -z "$CC"], [
   AS_IF([test "x$want_musl" = "xyes" -o -n "$musl_prefix"], [
     AC_MSG_NOTICE([CC already set; ignoring --with-musl and --with-musl-prefix])
   ])
+])
+
+dnl ---------------------------------------------------------------------------
+dnl Infer sysroot from a sysroot-style musl compiler when configure is given
+dnl /path/to/sysroot or /path/to/sysroot/usr rather than an explicit sysroot.
+dnl ---------------------------------------------------------------------------
+AS_IF([test -z "$CLAW_SYSROOT"], [
+  claw_inferred_sysroot=""
+  case "$CC" in
+    */usr/bin/musl-gcc)
+      claw_inferred_sysroot=`printf '%s\n' "$CC" | sed 's,/usr/bin/musl-gcc$,,'`
+      ;;
+  esac
+  AS_IF([test -n "$claw_inferred_sysroot" -a -d "$claw_inferred_sysroot/usr/include"], [
+    CLAW_SYSROOT="$claw_inferred_sysroot"
+    AC_MSG_NOTICE([Inferred sysroot from musl compiler: $CLAW_SYSROOT])
+  ])
+])
+
+dnl ---------------------------------------------------------------------------
+dnl Apply --sysroot to CFLAGS/LDFLAGS if we're NOT using a specs override
+dnl (specs already encodes --sysroot in the *link spec above)
+dnl ---------------------------------------------------------------------------
+AS_IF([test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"], [
+  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
+  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
+  AC_MSG_NOTICE([Using sysroot: $CLAW_SYSROOT])
 ])
 
 AC_PROG_CC
