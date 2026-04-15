@@ -1,5 +1,8 @@
 # Prerequisites
 *.d
+!config/services.d/
+!config/targets.d/
+!config/targets.d/*.yml
 
 # Object files
 *.o

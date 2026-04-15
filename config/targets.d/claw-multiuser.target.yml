@@ -1,0 +1,6 @@
+name: claw-multiuser.target
+description: Multi-User System
+requires: claw-basic.target claw-network.target
+wants: claw-syslog.service
+after: claw-network.target
+default_target: true
