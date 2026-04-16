@@ -242,10 +242,16 @@ log_info "  Format: tar.zst (meta/ + payload/ structure)"
 
 # --- Verification ---
 log_info "Verifying package contents..."
-if tar --zstd -tf "$PKG_PATH" >/dev/null 2>&1; then
-    tar --zstd -tf "$PKG_PATH" | sed -n '1,20{s/^/  /;p;}'
+if tar --help 2>/dev/null | grep -q -- '--zstd'; then
+    (
+        set +o pipefail
+        tar --zstd -tf "$PKG_PATH" | head -n 20 | sed 's/^/  /'
+    )
 else
-    zstd -dc "$PKG_PATH" | tar -tf - | sed -n '1,20{s/^/  /;p;}'
+    (
+        set +o pipefail
+        zstd -dc "$PKG_PATH" | tar -tf - | head -n 20 | sed 's/^/  /'
+    )
 fi
 echo "  ..."
 
