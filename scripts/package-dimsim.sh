@@ -242,7 +242,17 @@ log_info "  Format: tar.zst (meta/ + payload/ structure)"
 
 # --- Verification ---
 log_info "Verifying package contents..."
-tar -tzf "$PKG_PATH" | head -20 | sed 's/^/  /'
+if tar --help 2>/dev/null | grep -q -- '--zstd'; then
+    (
+        set +o pipefail
+        tar --zstd -tf "$PKG_PATH" | head -n 20 | sed 's/^/  /'
+    )
+else
+    (
+        set +o pipefail
+        zstd -dc "$PKG_PATH" | tar -tf - | head -n 20 | sed 's/^/  /'
+    )
+fi
 echo "  ..."
 
 log_info "Package ready for installation with dimsim"
