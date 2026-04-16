@@ -222,7 +222,9 @@ verify-manifest:
 	if [ $$ok -ne $$total ]; then exit 1; fi
 
 # Package as dimsim .dpk using the staging sysroot
-.PHONY: package-dimsim
+.PHONY: package package-dimsim
+package: package-dimsim
+
 package-dimsim: install-sysroot
 	@command -v zstd >/dev/null 2>&1 || \
 	    { echo "ERROR: zstd not found. Install zstandard compression."; exit 1; }
