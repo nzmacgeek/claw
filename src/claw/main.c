@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
+#include <time.h>
 
 #include "claw.h"
 #include "log.h"
@@ -68,23 +69,39 @@ static int token_requests_single_user(const char *token) {
         || strcmp(token, "emergency") == 0;
 }
 
+static int read_boot_cmdline(char *buf, size_t len) {
+    const int max_attempts = 20;
+    const struct timespec retry_delay = { 0, 100 * 1000 * 1000 };
+
+    if (!buf || len == 0) return -1;
+    buf[0] = '\0';
+
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        FILE *f = fopen("/proc/cmdline", "r");
+        if (f) {
+            int ok = fgets(buf, (int)len, f) != NULL;
+            fclose(f);
+            if (ok) return 0;
+        }
+
+        if (attempt + 1 < max_attempts) {
+            nanosleep(&retry_delay, NULL);
+        }
+    }
+
+    return -1;
+}
+
 static void load_boot_options(boot_options_t *opts) {
     if (!opts) return;
 
     memset(opts, 0, sizeof(*opts));
 
-    FILE *f = fopen("/proc/cmdline", "r");
-    if (!f) {
-        log_debug("boot", "Cannot read /proc/cmdline: %s", strerror(errno));
-        return;
-    }
-
     char cmdline[4096];
-    if (!fgets(cmdline, sizeof(cmdline), f)) {
-        fclose(f);
+    if (read_boot_cmdline(cmdline, sizeof(cmdline)) != 0) {
+        log_warning("boot", "Cannot read /proc/cmdline after retries: %s", strerror(errno));
         return;
     }
-    fclose(f);
 
     char *saveptr = NULL;
     for (char *tok = strtok_r(cmdline, " \t\r\n", &saveptr);
@@ -145,55 +162,65 @@ static void apply_log_config(void) {
 static int run_single_user_shell(void) {
     extern char **environ;
 
-    const char *shell_path = "/bin/bash";
-    char *const bash_argv[] = { "bash", "-l", NULL };
-    char *const sh_argv[]   = { "sh", NULL };
-    char *const *shell_argv = bash_argv;
+    const char *shell_path = "/bin/sh";
+    const char *console_path = "/dev/tty1";
+    char *const bash_argv[] = { "bash", "-i", NULL };
+    char *const sh_argv[]   = { "sh", "-i", NULL };
+    char *const *shell_argv = sh_argv;
 
     if (access(shell_path, X_OK) != 0) {
-        if (access("/bin/sh", X_OK) != 0) {
-            log_error("boot", "Single-user shell not available: neither /bin/bash nor /bin/sh exists");
+        if (access("/bin/bash", X_OK) != 0) {
+            log_error("boot", "Single-user shell not available: neither /bin/sh nor /bin/bash exists");
             return -1;
         }
-        shell_path = "/bin/sh";
-        shell_argv = sh_argv;
-        log_warning("boot", "/bin/bash not available; falling back to /bin/sh");
+        shell_path = "/bin/bash";
+        shell_argv = bash_argv;
+        log_warning("boot", "/bin/sh not available; falling back to /bin/bash");
     }
 
     for (;;) {
-        int console_fd = open("/dev/console", O_RDWR);
-        if (console_fd < 0)
-            console_fd = open("/dev/tty", O_RDWR);
-        if (console_fd < 0) {
-            log_error("boot", "Cannot open a system console for single-user mode: %s",
-                      strerror(errno));
-            return -1;
-        }
-
         log_info("boot", "Launching single-user shell: %s", shell_path);
 
         pid_t pid = fork();
         if (pid < 0) {
             log_error("boot", "fork() failed for single-user shell: %s", strerror(errno));
-            close(console_fd);
             return -1;
         }
 
         if (pid == 0) {
-            setsid();
-            ioctl(console_fd, TIOCSCTTY, 0);
-            dup2(console_fd, STDIN_FILENO);
-            dup2(console_fd, STDOUT_FILENO);
-            dup2(console_fd, STDERR_FILENO);
-            if (console_fd > STDERR_FILENO)
-                close(console_fd);
+            int tty_fd = -1;
+
+            if (setsid() < 0)
+                _exit(126);
+
+            tty_fd = open(console_path, O_RDWR);
+            if (tty_fd < 0)
+                _exit(126);
+
+            if (ioctl(tty_fd, TIOCSCTTY, 0) < 0)
+                _exit(126);
+
+            if (setpgid(0, 0) < 0 && errno != EACCES)
+                _exit(126);
+
+            pid_t pgrp = getpgrp();
+            if (ioctl(tty_fd, TIOCSPGRP, &pgrp) < 0)
+                _exit(126);
+
+            if (dup2(tty_fd, STDIN_FILENO) < 0 ||
+                dup2(tty_fd, STDOUT_FILENO) < 0 ||
+                dup2(tty_fd, STDERR_FILENO) < 0)
+                _exit(126);
+
+            if (tty_fd > STDERR_FILENO)
+                close(tty_fd);
+
             if (chdir("/") != 0)
                 _exit(126);
+
             execve(shell_path, shell_argv, environ);
             _exit(127);
         }
-
-        close(console_fd);
 
         for (;;) {
             int status = 0;
