@@ -19,6 +19,7 @@
 #include "ipc.h"
 #include "os.h"
 #include "state.h"
+#include "devev.h"
 
 /* -----------------------------------------------------------------------
  * Global daemon state
@@ -33,6 +34,7 @@ static config_t     *g_config     = NULL;
 static dag_t        *g_dag        = NULL;
 static supervisor_t *g_supervisor = NULL;
 static state_db_t   *g_state      = NULL;
+static int           g_devev_fd   = -1;  /* Device event file descriptor */
 
 #define STATE_DB_FILENAME "state.db"
 
@@ -434,12 +436,110 @@ static void sync_state(void) {
 }
 
 /* -----------------------------------------------------------------------
+ * Device event handling
+ * --------------------------------------------------------------------- */
+
+/*
+ * Handle device events from the kernel.
+ * Currently responds to Ctrl+Alt+Delete by activating the restart target.
+ *
+ * Optional confirmation mechanism (example, commented out by default):
+ * When DEV_EV_CTRL_ALT_DEL is received, could prompt user for confirmation
+ * before triggering restart. For example:
+ *
+ *   static time_t last_cad_time = 0;
+ *   time_t now = time(NULL);
+ *   if (now - last_cad_time < 3) {
+ *       // User pressed Ctrl+Alt+Delete twice within 3 seconds — confirm
+ *       activate_restart_target();
+ *   } else {
+ *       log_info("event", "Ctrl+Alt+Delete pressed; press again within 3 seconds to restart");
+ *       last_cad_time = now;
+ *   }
+ *
+ * Default behavior: immediately activate restart target.
+ */
+static void handle_device_event(const devev_t *ev) {
+    if (!ev) return;
+
+    log_info("event", "Device event received: %s", devev_type_name(ev->type));
+
+    switch (ev->type) {
+        case DEV_EV_CTRL_ALT_DEL:
+            log_info("event", "Ctrl+Alt+Delete detected — activating restart target");
+
+            /* Activate claw-restart.target */
+            if (!g_dag || !g_supervisor) {
+                log_warning("event", "Cannot activate restart target: DAG or supervisor not initialized");
+                g_sig_term = 1;  /* Fall back to clean shutdown */
+                return;
+            }
+
+            vector_t *order = dag_activation_order(g_dag, "claw-restart.target");
+            if (!order) {
+                log_warning("event", "Cannot resolve activation order for claw-restart.target");
+                g_sig_term = 1;  /* Fall back to clean shutdown */
+                return;
+            }
+
+            /* Start required services for restart target */
+            for (size_t i = 0; i < vector_length(order); i++) {
+                dag_node_t *node = vector_get(order, i);
+                if (node->unit_type == UNIT_SERVICE) {
+                    log_info("event", "Activating service for restart: %s", node->name);
+                    supervisor_start(g_supervisor, node->name);
+                }
+            }
+            vector_free_shell(order);
+
+            /* Trigger shutdown after a brief delay to allow restart services to run */
+            log_info("event", "System restart initiated via Ctrl+Alt+Delete");
+            g_sig_term = 1;
+            break;
+
+        case DEV_EV_POWER_BUTTON:
+            log_info("event", "Power button detected — initiating shutdown");
+            g_sig_term = 1;
+            break;
+
+        case DEV_EV_SLEEP_BUTTON:
+            log_info("event", "Sleep button detected (not implemented)");
+            break;
+
+        case DEV_EV_NONE:
+        default:
+            log_debug("event", "Unknown or no-op device event: %u", ev->type);
+            break;
+    }
+}
+
+static void poll_device_events(void) {
+    if (g_devev_fd < 0) return;
+
+    devev_t ev;
+    int rc = devev_poll(g_devev_fd, &ev);
+    if (rc > 0) {
+        handle_device_event(&ev);
+    } else if (rc < 0) {
+        log_warning("event", "Device event poll failed — closing event fd");
+        devev_close(g_devev_fd);
+        g_devev_fd = -1;
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Shutdown
  * --------------------------------------------------------------------- */
 
 static void do_shutdown(const char *reason) {
     log_shutdown(reason);
     fprintf(stdout, "\n[claw] The Magic Claw has spoken. Everyone must go now.\n\n");
+
+    /* Close device event interface */
+    if (g_devev_fd >= 0) {
+        devev_close(g_devev_fd);
+        g_devev_fd = -1;
+    }
 
     if (g_config && g_supervisor) {
         /* Stop all active services in reverse topo order */
@@ -553,6 +653,19 @@ static int do_boot(void) {
     g_ipc_fd = ipc_server_create(g_socket_path);
     if (g_ipc_fd < 0)
         log_warning("boot", "IPC socket unavailable — clawctl will not work");
+
+    log_boot_stage("event", "Opening device event interface");
+    /* Try common device event paths (kernel-dependent) */
+    const char *devev_paths[] = {
+        "/dev/claw-events",   /* BlueyOS preferred path */
+        "/dev/input/event0",  /* Generic input event device */
+        NULL
+    };
+    for (int i = 0; devev_paths[i] && g_devev_fd < 0; i++) {
+        g_devev_fd = devev_open(devev_paths[i]);
+    }
+    if (g_devev_fd < 0)
+        log_info("boot", "Device event interface unavailable — Ctrl+Alt+Delete will not be handled");
 
     log_system_state(SYSTEM_EARLY_BOOT);
 
@@ -695,6 +808,7 @@ int main(int argc, char *argv[]) {
 
         supervisor_check_timeouts(g_supervisor);
         poll_ipc();
+        poll_device_events();
 
         /* Persist state every 30 seconds */
         if (++loop_tick >= 30) {

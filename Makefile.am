@@ -73,7 +73,8 @@ libcore_a_SOURCES = \
 	src/core/service/supervisor.c \
 	src/core/state/state.c \
 	src/core/target/target.c \
-	src/os/mount.c
+	src/os/mount.c \
+	src/os/devev.c
 
 # ---------------------------------------------------------------------------
 # Binaries
