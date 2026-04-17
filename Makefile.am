@@ -109,7 +109,8 @@ dist_clawtargets_DATA = \
 	config/targets.d/claw-basic.target.yml \
 	config/targets.d/claw-early.target.yml \
 	config/targets.d/claw-multiuser.target.yml \
-	config/targets.d/claw-network.target.yml
+	config/targets.d/claw-network.target.yml \
+	config/targets.d/claw-restart.target.yml
 
 # ---------------------------------------------------------------------------
 # Runtime directory creation hook

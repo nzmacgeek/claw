@@ -55,13 +55,18 @@ int devev_poll(int fd, devev_t *ev) {
     ssize_t n = read(fd, buf, sizeof(buf));
 
     if (n == 0) {
-        /* EOF — no events available */
-        return 0;
+        /* EOF — device removed or closed */
+        log_warning("devev", "EOF on event fd — device may have been removed");
+        return -1;
     }
 
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             /* No data available (non-blocking) */
+            return 0;
+        }
+        if (errno == EINTR) {
+            /* Interrupted by signal — retry later */
             return 0;
         }
         log_warning("devev", "read() error on event fd: %s", strerror(errno));

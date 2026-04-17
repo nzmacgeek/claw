@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <sys/reboot.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
@@ -29,6 +30,7 @@ static volatile int g_sig_child   = 0;
 static volatile int g_sig_term    = 0;
 static volatile int g_sig_int     = 0;
 static volatile int g_sig_hup     = 0;
+static volatile int g_sig_reboot  = 0;  /* Set to 1 to invoke reboot instead of halt */
 
 static config_t     *g_config     = NULL;
 static dag_t        *g_dag        = NULL;
@@ -466,35 +468,27 @@ static void handle_device_event(const devev_t *ev) {
 
     switch (ev->type) {
         case DEV_EV_CTRL_ALT_DEL:
-            log_info("event", "Ctrl+Alt+Delete detected — activating restart target");
-
-            /* Activate claw-restart.target */
-            if (!g_dag || !g_supervisor) {
-                log_warning("event", "Cannot activate restart target: DAG or supervisor not initialized");
-                g_sig_term = 1;  /* Fall back to clean shutdown */
-                return;
-            }
-
-            vector_t *order = dag_activation_order(g_dag, "claw-restart.target");
-            if (!order) {
-                log_warning("event", "Cannot resolve activation order for claw-restart.target");
-                g_sig_term = 1;  /* Fall back to clean shutdown */
-                return;
-            }
-
-            /* Start required services for restart target */
-            for (size_t i = 0; i < vector_length(order); i++) {
-                dag_node_t *node = vector_get(order, i);
-                if (node->unit_type == UNIT_SERVICE) {
-                    log_info("event", "Activating service for restart: %s", node->name);
-                    supervisor_start(g_supervisor, node->name);
-                }
-            }
-            vector_free_shell(order);
-
-            /* Trigger shutdown after a brief delay to allow restart services to run */
-            log_info("event", "System restart initiated via Ctrl+Alt+Delete");
-            g_sig_term = 1;
+            log_info("event", "Ctrl+Alt+Delete detected — scheduling system restart");
+            /*
+             * Mark a reboot intent and let the main loop exit cleanly.
+             * do_shutdown() will stop all services; after it returns, main()
+             * invokes reboot(RB_AUTOBOOT) to hand off to the kernel.
+             *
+             * Optional double-tap confirmation example (replace the two lines
+             * below):
+             *
+             *   static time_t last_cad_time = 0;
+             *   time_t now = time(NULL);
+             *   if (now - last_cad_time < 3) {
+             *       g_sig_reboot = 1;
+             *       g_sig_term   = 1;
+             *   } else {
+             *       log_info("event", "Press Ctrl+Alt+Delete again within 3s to restart");
+             *       last_cad_time = now;
+             *   }
+             */
+            g_sig_reboot = 1;
+            g_sig_term   = 1;
             break;
 
         case DEV_EV_POWER_BUTTON:
@@ -517,10 +511,11 @@ static void poll_device_events(void) {
     if (g_devev_fd < 0) return;
 
     devev_t ev;
-    int rc = devev_poll(g_devev_fd, &ev);
-    if (rc > 0) {
+    int rc;
+    while ((rc = devev_poll(g_devev_fd, &ev)) > 0) {
         handle_device_event(&ev);
-    } else if (rc < 0) {
+    }
+    if (rc < 0) {
         log_warning("event", "Device event poll failed — closing event fd");
         devev_close(g_devev_fd);
         g_devev_fd = -1;
@@ -781,6 +776,10 @@ int main(int argc, char *argv[]) {
 
     if (boot_rc > 0) {
         do_shutdown(g_sig_term ? "SIGTERM" : g_sig_int ? "SIGINT" : "single-user mode exit");
+        if (g_sig_reboot) {
+            log_info("init", "Rebooting system");
+            reboot(RB_AUTOBOOT);
+        }
         return 0;
     }
 
@@ -826,5 +825,9 @@ int main(int argc, char *argv[]) {
     }
 
     do_shutdown(g_sig_term ? "SIGTERM" : "SIGINT");
+    if (g_sig_reboot) {
+        log_info("init", "Rebooting system");
+        reboot(RB_AUTOBOOT);
+    }
     return 0;
 }
