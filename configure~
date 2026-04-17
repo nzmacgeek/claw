@@ -1398,10 +1398,10 @@ Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
   --with-sysroot=PATH     pass --sysroot=PATH to the compiler and linker
-  --with-musl-prefix=PATH prefix containing bin/musl-gcc when using a bundled
-                          musl toolchain
+  --with-musl-prefix=PATH prefix containing musl-gcc under bin/ or usr/bin/
+                          when using a bundled musl toolchain
   --with-musl[=PATH]      use musl-gcc as the C compiler; optionally supply a
-                          musl-gcc binary or toolchain prefix
+                          musl-gcc binary, toolchain prefix, or sysroot root
 
 Some influential environment variables:
   CC          C compiler command
@@ -3207,16 +3207,6 @@ fi
 AM_BACKSLASH='\'
 
 
-if test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"
-then :
-
-  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
-  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Using sysroot: $CLAW_SYSROOT" >&5
-printf "%s\n" "$as_me: Using sysroot: $CLAW_SYSROOT" >&6;}
-
-fi
-
 if test -z "$CC"
 then :
 
@@ -3226,27 +3216,29 @@ then :
     if test -n "$musl_locator"
 then :
 
-      if test -x "$musl_locator"
+      claw_musl_candidate=""
+      for claw_try in \
+        "$musl_locator" \
+        "$musl_locator/bin/musl-gcc" \
+        "$musl_locator/usr/bin/musl-gcc"; do
+        if test -x "$claw_try"
 then :
 
-        CC="$musl_locator"
+          claw_musl_candidate="$claw_try"
+          break
+
+fi
+      done
+      if test -n "$claw_musl_candidate"
+then :
+
+        CC="$claw_musl_candidate"
         { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$musl_locator: using $CC" >&5
 printf "%s\n" "$as_me: --with-musl=$musl_locator: using $CC" >&6;}
 
 else $as_nop
 
-        if test -x "$musl_locator/bin/musl-gcc"
-then :
-
-          CC="$musl_locator/bin/musl-gcc"
-          { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl=$musl_locator: using $CC" >&5
-printf "%s\n" "$as_me: --with-musl=$musl_locator: using $CC" >&6;}
-
-else $as_nop
-
-          as_fn_error $? "musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc)" "$LINENO" 5
-
-fi
+        as_fn_error $? "musl-gcc not found in $musl_locator (tried: $musl_locator, $musl_locator/bin/musl-gcc, $musl_locator/usr/bin/musl-gcc)" "$LINENO" 5
 
 fi
 
@@ -3255,16 +3247,28 @@ else $as_nop
       if test -n "$musl_prefix"
 then :
 
-        if test -x "$musl_prefix/bin/musl-gcc"
+        claw_musl_candidate=""
+        for claw_try in \
+          "$musl_prefix/bin/musl-gcc" \
+          "$musl_prefix/usr/bin/musl-gcc"; do
+          if test -x "$claw_try"
 then :
 
-          CC="$musl_prefix/bin/musl-gcc"
+            claw_musl_candidate="$claw_try"
+            break
+
+fi
+        done
+        if test -n "$claw_musl_candidate"
+then :
+
+          CC="$claw_musl_candidate"
           { printf "%s\n" "$as_me:${as_lineno-$LINENO}: --with-musl-prefix=$musl_prefix: using $CC" >&5
 printf "%s\n" "$as_me: --with-musl-prefix=$musl_prefix: using $CC" >&6;}
 
 else $as_nop
 
-          as_fn_error $? "musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc)" "$LINENO" 5
+          as_fn_error $? "musl-gcc not found under --with-musl-prefix=$musl_prefix (tried: $musl_prefix/bin/musl-gcc, $musl_prefix/usr/bin/musl-gcc)" "$LINENO" 5
 
 fi
 
@@ -3289,6 +3293,36 @@ then :
 printf "%s\n" "$as_me: CC already set; ignoring --with-musl and --with-musl-prefix" >&6;}
 
 fi
+
+fi
+
+if test -z "$CLAW_SYSROOT"
+then :
+
+  claw_inferred_sysroot=""
+  case "$CC" in
+    */usr/bin/musl-gcc)
+      claw_inferred_sysroot=`printf '%s\n' "$CC" | sed 's,/usr/bin/musl-gcc$,,'`
+      ;;
+  esac
+  if test -n "$claw_inferred_sysroot" -a -d "$claw_inferred_sysroot/usr/include"
+then :
+
+    CLAW_SYSROOT="$claw_inferred_sysroot"
+    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Inferred sysroot from musl compiler: $CLAW_SYSROOT" >&5
+printf "%s\n" "$as_me: Inferred sysroot from musl compiler: $CLAW_SYSROOT" >&6;}
+
+fi
+
+fi
+
+if test -n "$CLAW_SYSROOT" -a "x$claw_using_cross_specs" = "xno"
+then :
+
+  CFLAGS="$CFLAGS --sysroot=$CLAW_SYSROOT"
+  LDFLAGS="$LDFLAGS --sysroot=$CLAW_SYSROOT"
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Using sysroot: $CLAW_SYSROOT" >&5
+printf "%s\n" "$as_me: Using sysroot: $CLAW_SYSROOT" >&6;}
 
 fi
 

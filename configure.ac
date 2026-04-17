@@ -157,6 +157,7 @@ dnl Set CLAW_SYSROOT back to empty if it was only set to "disabled" sentinel
 AS_IF([test "x$CLAW_SYSROOT" = "xdisabled"], [CLAW_SYSROOT=""])
 
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall -Werror])
+AM_MAINTAINER_MODE([disable])
 AM_SILENT_RULES([yes])
 
 dnl ---------------------------------------------------------------------------
