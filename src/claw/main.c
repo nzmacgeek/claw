@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <sys/reboot.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
@@ -19,6 +20,7 @@
 #include "ipc.h"
 #include "os.h"
 #include "state.h"
+#include "devev.h"
 
 /* -----------------------------------------------------------------------
  * Global daemon state
@@ -28,11 +30,13 @@ static volatile int g_sig_child   = 0;
 static volatile int g_sig_term    = 0;
 static volatile int g_sig_int     = 0;
 static volatile int g_sig_hup     = 0;
+static volatile int g_sig_reboot  = 0;  /* Set to 1 to invoke reboot instead of halt */
 
 static config_t     *g_config     = NULL;
 static dag_t        *g_dag        = NULL;
 static supervisor_t *g_supervisor = NULL;
 static state_db_t   *g_state      = NULL;
+static int           g_devev_fd   = -1;  /* Device event file descriptor */
 
 #define STATE_DB_FILENAME "state.db"
 
@@ -434,12 +438,103 @@ static void sync_state(void) {
 }
 
 /* -----------------------------------------------------------------------
+ * Device event handling
+ * --------------------------------------------------------------------- */
+
+/*
+ * Handle device events from the kernel.
+ * Currently responds to Ctrl+Alt+Delete by activating the restart target.
+ *
+ * Optional confirmation mechanism (example, commented out by default):
+ * When DEV_EV_CTRL_ALT_DEL is received, could prompt user for confirmation
+ * before triggering restart. For example:
+ *
+ *   static time_t last_cad_time = 0;
+ *   time_t now = time(NULL);
+ *   if (now - last_cad_time < 3) {
+ *       // User pressed Ctrl+Alt+Delete twice within 3 seconds — confirm
+ *       activate_restart_target();
+ *   } else {
+ *       log_info("event", "Ctrl+Alt+Delete pressed; press again within 3 seconds to restart");
+ *       last_cad_time = now;
+ *   }
+ *
+ * Default behavior: immediately activate restart target.
+ */
+static void handle_device_event(const devev_t *ev) {
+    if (!ev) return;
+
+    log_info("event", "Device event received: %s", devev_type_name(ev->type));
+
+    switch (ev->type) {
+        case DEV_EV_CTRL_ALT_DEL:
+            log_info("event", "Ctrl+Alt+Delete detected — scheduling system restart");
+            /*
+             * Mark a reboot intent and let the main loop exit cleanly.
+             * do_shutdown() will stop all services; after it returns, main()
+             * invokes reboot(RB_AUTOBOOT) to hand off to the kernel.
+             *
+             * Optional double-tap confirmation example (replace the two lines
+             * below):
+             *
+             *   static time_t last_cad_time = 0;
+             *   time_t now = time(NULL);
+             *   if (now - last_cad_time < 3) {
+             *       g_sig_reboot = 1;
+             *       g_sig_term   = 1;
+             *   } else {
+             *       log_info("event", "Press Ctrl+Alt+Delete again within 3s to restart");
+             *       last_cad_time = now;
+             *   }
+             */
+            g_sig_reboot = 1;
+            g_sig_term   = 1;
+            break;
+
+        case DEV_EV_POWER_BUTTON:
+            log_info("event", "Power button detected — initiating shutdown");
+            g_sig_term = 1;
+            break;
+
+        case DEV_EV_SLEEP_BUTTON:
+            log_info("event", "Sleep button detected (not implemented)");
+            break;
+
+        case DEV_EV_NONE:
+        default:
+            log_debug("event", "Unknown or no-op device event: %u", ev->type);
+            break;
+    }
+}
+
+static void poll_device_events(void) {
+    if (g_devev_fd < 0) return;
+
+    devev_t ev;
+    int rc;
+    while ((rc = devev_poll(g_devev_fd, &ev)) > 0) {
+        handle_device_event(&ev);
+    }
+    if (rc < 0) {
+        log_warning("event", "Device event poll failed — closing event fd");
+        devev_close(g_devev_fd);
+        g_devev_fd = -1;
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Shutdown
  * --------------------------------------------------------------------- */
 
 static void do_shutdown(const char *reason) {
     log_shutdown(reason);
     fprintf(stdout, "\n[claw] The Magic Claw has spoken. Everyone must go now.\n\n");
+
+    /* Close device event interface */
+    if (g_devev_fd >= 0) {
+        devev_close(g_devev_fd);
+        g_devev_fd = -1;
+    }
 
     if (g_config && g_supervisor) {
         /* Stop all active services in reverse topo order */
@@ -553,6 +648,19 @@ static int do_boot(void) {
     g_ipc_fd = ipc_server_create(g_socket_path);
     if (g_ipc_fd < 0)
         log_warning("boot", "IPC socket unavailable — clawctl will not work");
+
+    log_boot_stage("event", "Opening device event interface");
+    /* Try common device event paths (kernel-dependent) */
+    const char *devev_paths[] = {
+        "/dev/claw-events",   /* BlueyOS preferred path */
+        "/dev/input/event0",  /* Generic input event device */
+        NULL
+    };
+    for (int i = 0; devev_paths[i] && g_devev_fd < 0; i++) {
+        g_devev_fd = devev_open(devev_paths[i]);
+    }
+    if (g_devev_fd < 0)
+        log_info("boot", "Device event interface unavailable — Ctrl+Alt+Delete will not be handled");
 
     log_system_state(SYSTEM_EARLY_BOOT);
 
@@ -668,6 +776,11 @@ int main(int argc, char *argv[]) {
 
     if (boot_rc > 0) {
         do_shutdown(g_sig_term ? "SIGTERM" : g_sig_int ? "SIGINT" : "single-user mode exit");
+        if (g_sig_reboot) {
+            log_info("init", "Rebooting system");
+            if (reboot(RB_AUTOBOOT) < 0)
+                log_error("init", "reboot() failed: %s", strerror(errno));
+        }
         return 0;
     }
 
@@ -695,6 +808,7 @@ int main(int argc, char *argv[]) {
 
         supervisor_check_timeouts(g_supervisor);
         poll_ipc();
+        poll_device_events();
 
         /* Persist state every 30 seconds */
         if (++loop_tick >= 30) {
@@ -712,5 +826,10 @@ int main(int argc, char *argv[]) {
     }
 
     do_shutdown(g_sig_term ? "SIGTERM" : "SIGINT");
+    if (g_sig_reboot) {
+        log_info("init", "Rebooting system");
+        if (reboot(RB_AUTOBOOT) < 0)
+            log_error("init", "reboot() failed: %s", strerror(errno));
+    }
     return 0;
 }
