@@ -778,7 +778,8 @@ int main(int argc, char *argv[]) {
         do_shutdown(g_sig_term ? "SIGTERM" : g_sig_int ? "SIGINT" : "single-user mode exit");
         if (g_sig_reboot) {
             log_info("init", "Rebooting system");
-            reboot(RB_AUTOBOOT);
+            if (reboot(RB_AUTOBOOT) < 0)
+                log_error("init", "reboot() failed: %s", strerror(errno));
         }
         return 0;
     }
@@ -827,7 +828,8 @@ int main(int argc, char *argv[]) {
     do_shutdown(g_sig_term ? "SIGTERM" : "SIGINT");
     if (g_sig_reboot) {
         log_info("init", "Rebooting system");
-        reboot(RB_AUTOBOOT);
+        if (reboot(RB_AUTOBOOT) < 0)
+            log_error("init", "reboot() failed: %s", strerror(errno));
     }
     return 0;
 }
