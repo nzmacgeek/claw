@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -30,7 +31,10 @@ static const char *level_colors[] = {
 
 static const char *color_reset = "\033[0m";
 static const char *syslog_socket_path = "/run/log/yap.inbox";
+static const char *syslog_file_name = "claw.log";
 static const char *syslog_log_path = "/var/log/system.log";
+static const char *syslog_ready_path = "/run/log/yap.ready";
+static const char *syslog_lock_path = "/run/log/yap.system.lock";
 
 static int map_syslog_priority(log_level_t level) {
     int severity = 6; /* LOG_INFO */
@@ -56,17 +60,37 @@ static int map_syslog_priority(log_level_t level) {
     return (3 << 3) | severity; /* LOG_DAEMON */
 }
 
+static const char *map_syslog_severity_name(log_level_t level) {
+    switch (level) {
+        case LOG_DEBUG:
+            return "debug";
+        case LOG_INFO:
+            return "info";
+        case LOG_WARNING:
+            return "warning";
+        case LOG_ERROR:
+            return "err";
+        case LOG_CRITICAL:
+            return "crit";
+    }
+
+    return "info";
+}
+
 static int connect_syslog_socket(void) {
-    if (access(syslog_socket_path, F_OK) != 0) {
+    struct stat st;
+    char path[256];
+
+    if (stat(syslog_socket_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
         return -1;
     }
 
-    int fd = open(syslog_socket_path, O_WRONLY | O_APPEND);
-    if (fd < 0) {
+    if (snprintf(path, sizeof(path), "%s/%s", syslog_socket_path, syslog_file_name) >= (int)sizeof(path)) {
+        errno = ENAMETOOLONG;
         return -1;
     }
 
-    return fd;
+    return open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
 }
 
 static int write_syslog_payload(int fd, const char *payload, size_t len) {
@@ -87,12 +111,59 @@ static int write_syslog_payload(int fd, const char *payload, size_t len) {
     return 0;
 }
 
-static void mirror_to_syslog_file(const char *payload, size_t len) {
-    int fd;
-    struct stat st;
+static int acquire_syslog_lock(void) {
+    for (;;) {
+        int fd = open(syslog_lock_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) {
+            return fd;
+        }
+        if (errno != EEXIST) {
+            return -1;
+        }
+        usleep(1000);
+    }
+}
 
-    if (stat(syslog_log_path, &st) != 0 || st.st_size == 0) {
+static void mirror_to_syslog_file(log_level_t level, const char *module, const char *message) {
+    char payload[1152];
+    char timestamp[32];
+    char hostname[256];
+    time_t now;
+    struct tm *tm_info;
+    int fd;
+    int len;
+
+    if (access(syslog_ready_path, F_OK) != 0 || access(syslog_log_path, F_OK) != 0) {
         return;
+    }
+
+    now = time(NULL);
+    tm_info = localtime(&now);
+    if (!tm_info) {
+        return;
+    }
+
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        strcpy(hostname, "blueyos");
+    } else {
+        hostname[sizeof(hostname) - 1] = '\0';
+    }
+
+    strftime(timestamp, sizeof(timestamp), "%b %e %H:%M:%S", tm_info);
+    len = snprintf(payload,
+                   sizeof(payload),
+                   "%s %s claw/%s[%d]: <daemon.%s> %s\n",
+                   timestamp,
+                   hostname,
+                   module ? module : "core",
+                   getpid(),
+                   map_syslog_severity_name(level),
+                   message);
+    if (len <= 0) {
+        return;
+    }
+    if ((size_t)len >= sizeof(payload)) {
+        len = (int)sizeof(payload) - 1;
     }
 
     fd = open(syslog_log_path, O_WRONLY | O_APPEND);
@@ -100,7 +171,15 @@ static void mirror_to_syslog_file(const char *payload, size_t len) {
         return;
     }
 
-    (void)write_syslog_payload(fd, payload, len);
+    int lock_fd = acquire_syslog_lock();
+    if (lock_fd < 0) {
+        close(fd);
+        return;
+    }
+
+    (void)write_syslog_payload(fd, payload, (size_t)len);
+    close(lock_fd);
+    unlink(syslog_lock_path);
     close(fd);
 }
 
@@ -131,7 +210,7 @@ static void mirror_to_syslog(log_level_t level, const char *module, const char *
         close(fd);
     }
 
-    mirror_to_syslog_file(payload, (size_t)len);
+    mirror_to_syslog_file(level, module, message);
 }
 
 static int ensure_dir_recursive(const char *path, mode_t mode) {
