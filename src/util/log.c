@@ -4,6 +4,8 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -12,6 +14,9 @@ static log_level_t current_level = LOG_INFO;
 static char *log_dir = NULL;
 static int log_fd = -1;
 static int error_fd = -1;
+static int syslog_fd = -1;
+static const useconds_t syslog_connect_retry_delay_us = 10000;
+static const int syslog_connect_retry_attempts = 20;
 
 static const char *level_names[] = {
     "DEBUG",
@@ -30,6 +35,131 @@ static const char *level_colors[] = {
 };
 
 static const char *color_reset = "\033[0m";
+static const char *syslog_socket_path = "/dev/log";
+
+static int map_syslog_priority(log_level_t level) {
+    int severity = 6; /* LOG_INFO */
+
+    switch (level) {
+        case LOG_DEBUG:
+            severity = 7;
+            break;
+        case LOG_INFO:
+            severity = 6;
+            break;
+        case LOG_WARNING:
+            severity = 4;
+            break;
+        case LOG_ERROR:
+            severity = 3;
+            break;
+        case LOG_CRITICAL:
+            severity = 2;
+            break;
+    }
+
+    return (3 << 3) | severity; /* LOG_DAEMON */
+}
+
+static void close_syslog_socket(void) {
+    if (syslog_fd >= 0) {
+        close(syslog_fd);
+        syslog_fd = -1;
+    }
+}
+
+static int connect_syslog_socket(void) {
+    struct sockaddr_un addr;
+    int fd;
+    int flags;
+
+    if (syslog_fd >= 0) {
+        return 0;
+    }
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", syslog_socket_path);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    syslog_fd = fd;
+    return 0;
+}
+
+static int write_syslog_payload(const char *payload, size_t len) {
+    int attempt;
+    size_t offset = 0;
+
+    for (attempt = 0; attempt < syslog_connect_retry_attempts; attempt++) {
+        ssize_t written = write(syslog_fd, payload + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            if (offset >= len) {
+                return 0;
+            }
+            usleep(syslog_connect_retry_delay_us);
+            continue;
+        }
+        if (written == 0) {
+            return 0;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS) {
+            return -1;
+        }
+        usleep(syslog_connect_retry_delay_us);
+    }
+
+    return -1;
+}
+
+static void mirror_to_syslog(log_level_t level, const char *module, const char *message) {
+    char payload[1024];
+    int len;
+
+    len = snprintf(
+        payload,
+        sizeof(payload),
+        "<%d>claw/%s[%d]: %s\n",
+        map_syslog_priority(level),
+        module ? module : "core",
+        getpid(),
+        message
+    );
+    if (len <= 0) {
+        return;
+    }
+    if ((size_t)len >= sizeof(payload)) {
+        len = (int)sizeof(payload) - 1;
+    }
+
+    if (connect_syslog_socket() != 0) {
+        return;
+    }
+
+    if (write_syslog_payload(payload, (size_t)len) == 0) {
+        return;
+    }
+
+    close_syslog_socket();
+    if (connect_syslog_socket() == 0 && write_syslog_payload(payload, (size_t)len) == 0) {
+        return;
+    }
+}
 
 static int ensure_dir_recursive(const char *path, mode_t mode) {
     char buf[512];
@@ -103,6 +233,8 @@ const char *log_get_dir(void) {
 }
 
 static void log_vprintf(log_level_t level, const char *module, const char *fmt, va_list ap) {
+    char message[768];
+
     if (level < current_level) {
         return;
     }
@@ -114,10 +246,11 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
 
     /* Format message */
     char buffer[1024];
+    vsnprintf(message, sizeof(message), fmt, ap);
     int len = snprintf(buffer, sizeof(buffer), "[%s] [%-8s] [%-15s] ",
                        timestamp, level_names[level], module ? module : "core");
 
-    vsnprintf(buffer + len, sizeof(buffer) - len, fmt, ap);
+    snprintf(buffer + len, sizeof(buffer) - (size_t)len, "%s", message);
 
     /* Log to console with colors */
     if (level >= LOG_WARNING) {
@@ -139,6 +272,8 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
     if ((level == LOG_ERROR || level == LOG_CRITICAL) && error_fd >= 0) {
         dprintf(error_fd, "%s\n", buffer);
     }
+
+    mirror_to_syslog(level, module, message);
 }
 
 void log_debug(const char *module, const char *fmt, ...) {
@@ -241,6 +376,8 @@ void log_cleanup(void) {
         close(error_fd);
         error_fd = -1;
     }
+
+    close_syslog_socket();
 
     if (log_dir) {
         free(log_dir);
