@@ -119,6 +119,8 @@ static int write_syslog_payload(int fd, const char *payload, size_t len) {
 static int acquire_syslog_lock(int fd) {
     long retry_delay_ns = SYSLOG_LOCK_INITIAL_BACKOFF_NS;
     int attempt;
+    struct timespec sleep_time;
+    struct timespec remaining_time;
 
     for (attempt = 0; attempt < SYSLOG_LOCK_MAX_RETRIES; ++attempt) {
         if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
@@ -129,8 +131,6 @@ static int acquire_syslog_lock(int fd) {
             return -1;
         }
 
-        struct timespec sleep_time;
-        struct timespec remaining_time;
         sleep_time.tv_sec = 0;
         sleep_time.tv_nsec = retry_delay_ns;
         while (nanosleep(&sleep_time, &remaining_time) != 0 && errno == EINTR) {
@@ -339,10 +339,10 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
     if (len < 0) {
         snprintf(buffer, sizeof(buffer), "%s", message);
     } else {
-        if (len > 0 && len < (int)sizeof(buffer)) {
-            prefix_len = (size_t)len;
-        } else if (len >= (int)sizeof(buffer)) {
+        if (len >= (int)sizeof(buffer)) {
             prefix_len = sizeof(buffer) - 1;
+        } else if (len > 0) {
+            prefix_len = (size_t)len;
         }
 
         snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
