@@ -15,6 +15,7 @@ BUILD_DIR="${1:-./_build-blueyos}"
 STAGING_DIR="${STAGING_DIR:-}"
 MUSL_PREFIX="${MUSL_PREFIX:-}"
 SYSROOT="${SYSROOT:-}"
+HOST_TRIPLET="${HOST_TRIPLET:-}"
 
 # --- Colors for output ---
 readonly RED='\033[0;31m'
@@ -40,9 +41,12 @@ if [[ -n "$MUSL_PREFIX" ]]; then
         log_error "musl-gcc not found under MUSL_PREFIX: $MUSL_PREFIX/bin/musl-gcc"
         exit 1
     fi
+    MUSL_CC="$MUSL_PREFIX/bin/musl-gcc"
 elif ! command -v musl-gcc &> /dev/null; then
     log_error "musl-gcc not found. Install musl-tools or set MUSL_PREFIX/CC accordingly"
     exit 1
+else
+    MUSL_CC="$(command -v musl-gcc)"
 fi
 
 if ! command -v autoreconf &> /dev/null; then
@@ -58,6 +62,11 @@ if [[ -n "$MUSL_PREFIX" ]]; then
 fi
 if [[ -n "$SYSROOT" ]]; then
     log_info "Sysroot: $SYSROOT"
+fi
+if [[ -n "$HOST_TRIPLET" ]]; then
+    log_info "Host triplet override: $HOST_TRIPLET"
+else
+    log_info "Host triplet: (auto-detected by configure)"
 fi
 
 # --- Generate autotools files if needed ---
@@ -91,6 +100,10 @@ fi
 
 if [[ -n "$SYSROOT" ]]; then
     configure_args+=("--with-sysroot=$SYSROOT")
+fi
+
+if [[ -n "$HOST_TRIPLET" ]]; then
+    configure_args+=("--host=$HOST_TRIPLET")
 fi
 
 "$PROJECT_ROOT/configure" "${configure_args[@]}"

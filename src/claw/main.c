@@ -242,6 +242,7 @@ static void handle_sig(int sig) {
 }
 
 static void setup_signal_handlers(void) {
+#ifndef __blueyos__
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_sig;
@@ -255,6 +256,16 @@ static void setup_signal_handlers(void) {
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGHUP,  &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
+#else
+    /*
+     * BlueyOS signal delivery is not stable enough yet for init to rely on it.
+     * Reap children from the main loop instead so the login path stays usable.
+     */
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT,  SIG_IGN);
+    signal(SIGHUP,  SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+#endif
 }
 
 /* -----------------------------------------------------------------------
@@ -789,10 +800,9 @@ int main(int argc, char *argv[]) {
 
     int loop_tick = 0;
     while (!g_sig_term && !g_sig_int) {
-        if (g_sig_child) {
+        if (g_sig_child)
             g_sig_child = 0;
-            reap_children();
-        }
+        reap_children();
         if (g_sig_hup) {
             g_sig_hup = 0;
             log_info("init", "SIGHUP — reloading configuration");

@@ -4,6 +4,8 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -12,7 +14,6 @@ static log_level_t current_level = LOG_INFO;
 static char *log_dir = NULL;
 static int log_fd = -1;
 static int error_fd = -1;
-
 static const char *level_names[] = {
     "DEBUG",
     "INFO",
@@ -30,6 +31,220 @@ static const char *level_colors[] = {
 };
 
 static const char *color_reset = "\033[0m";
+static const char *syslog_socket_path = "/run/log/yap.inbox";
+static const char *syslog_file_name = "claw.log";
+static const char *syslog_log_path = "/var/log/system.log";
+static const char *syslog_ready_path = "/run/log/yap.ready";
+enum {
+    SYSLOG_LOCK_MAX_RETRIES = 8,
+    SYSLOG_LOCK_INITIAL_BACKOFF_NS = 1000000L,
+    SYSLOG_LOCK_MAX_BACKOFF_NS = 64000000L
+};
+
+static int map_syslog_priority(log_level_t level) {
+    int severity = 6; /* LOG_INFO */
+
+    switch (level) {
+        case LOG_DEBUG:
+            severity = 7;
+            break;
+        case LOG_INFO:
+            severity = 6;
+            break;
+        case LOG_WARNING:
+            severity = 4;
+            break;
+        case LOG_ERROR:
+            severity = 3;
+            break;
+        case LOG_CRITICAL:
+            severity = 2;
+            break;
+    }
+
+    return (3 << 3) | severity; /* LOG_DAEMON */
+}
+
+static const char *map_syslog_severity_name(log_level_t level) {
+    switch (level) {
+        case LOG_DEBUG:
+            return "debug";
+        case LOG_INFO:
+            return "info";
+        case LOG_WARNING:
+            return "warning";
+        case LOG_ERROR:
+            return "err";
+        case LOG_CRITICAL:
+            return "crit";
+    }
+
+    return "info";
+}
+
+static int connect_syslog_socket(void) {
+    struct stat st;
+    char path[256];
+
+    if (stat(syslog_socket_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return -1;
+    }
+
+    if (snprintf(path, sizeof(path), "%s/%s", syslog_socket_path, syslog_file_name) >= (int)sizeof(path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    return open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+}
+
+static int write_syslog_payload(int fd, const char *payload, size_t len) {
+    size_t offset = 0;
+
+    while (offset < len) {
+        ssize_t written = write(fd, payload + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+static int acquire_syslog_lock(int fd) {
+    long retry_delay_ns = SYSLOG_LOCK_INITIAL_BACKOFF_NS;
+    int attempt;
+    struct timespec sleep_time;
+    struct timespec remaining_time;
+
+    for (attempt = 0; attempt < SYSLOG_LOCK_MAX_RETRIES; ++attempt) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            return 0;
+        }
+
+        if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR) {
+            return -1;
+        }
+
+        sleep_time.tv_sec = 0;
+        sleep_time.tv_nsec = retry_delay_ns;
+        while (nanosleep(&sleep_time, &remaining_time) != 0 && errno == EINTR) {
+            sleep_time = remaining_time;
+        }
+
+        if (retry_delay_ns < SYSLOG_LOCK_MAX_BACKOFF_NS) {
+            retry_delay_ns *= 2;
+        }
+    }
+
+    errno = ETIMEDOUT;
+    return -1;
+}
+
+static void mirror_to_syslog_file(log_level_t level, const char *module, const char *message) {
+    char payload[1152];
+    char timestamp[32];
+    char hostname[256];
+    time_t now;
+    struct tm *tm_info;
+    int fd;
+    int len;
+    int lock_acquired = 0;
+
+    if (access(syslog_ready_path, F_OK) != 0 || access(syslog_log_path, F_OK) != 0) {
+        return;
+    }
+
+    now = time(NULL);
+    tm_info = localtime(&now);
+    if (!tm_info) {
+        return;
+    }
+
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        strcpy(hostname, "blueyos");
+    } else {
+        hostname[sizeof(hostname) - 1] = '\0';
+    }
+
+    strftime(timestamp, sizeof(timestamp), "%b %e %H:%M:%S", tm_info);
+    len = snprintf(payload,
+                   sizeof(payload),
+                   "%s %s claw/%s[%d]: <daemon.%s> %s\n",
+                   timestamp,
+                   hostname,
+                   module ? module : "core",
+                   getpid(),
+                   map_syslog_severity_name(level),
+                   message);
+    if (len <= 0) {
+        return;
+    }
+    if ((size_t)len >= sizeof(payload)) {
+        len = (int)sizeof(payload) - 1;
+    }
+
+    fd = open(syslog_log_path, O_WRONLY | O_APPEND);
+    if (fd < 0) {
+        return;
+    }
+
+    if (acquire_syslog_lock(fd) == 0) {
+        lock_acquired = 1;
+    } else {
+        close(fd);
+        return;
+    }
+
+    if (lseek(fd, 0, SEEK_END) < 0) {
+        if (lock_acquired) {
+            flock(fd, LOCK_UN);
+        }
+        close(fd);
+        return;
+    }
+
+    (void)write_syslog_payload(fd, payload, (size_t)len);
+    if (lock_acquired) {
+        flock(fd, LOCK_UN);
+    }
+    close(fd);
+}
+
+static void mirror_to_syslog(log_level_t level, const char *module, const char *message) {
+    char payload[1024];
+    int fd;
+    int len;
+
+    len = snprintf(
+        payload,
+        sizeof(payload),
+        "<%d>claw/%s[%d]: %s\n",
+        map_syslog_priority(level),
+        module ? module : "core",
+        getpid(),
+        message
+    );
+    if (len <= 0) {
+        return;
+    }
+    if ((size_t)len >= sizeof(payload)) {
+        len = (int)sizeof(payload) - 1;
+    }
+
+    fd = connect_syslog_socket();
+    if (fd >= 0) {
+        (void)write_syslog_payload(fd, payload, (size_t)len);
+        close(fd);
+    }
+
+    mirror_to_syslog_file(level, module, message);
+}
 
 static int ensure_dir_recursive(const char *path, mode_t mode) {
     char buf[512];
@@ -103,6 +318,8 @@ const char *log_get_dir(void) {
 }
 
 static void log_vprintf(log_level_t level, const char *module, const char *fmt, va_list ap) {
+    char message[768];
+
     if (level < current_level) {
         return;
     }
@@ -114,10 +331,22 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
 
     /* Format message */
     char buffer[1024];
+    vsnprintf(message, sizeof(message), fmt, ap);
     int len = snprintf(buffer, sizeof(buffer), "[%s] [%-8s] [%-15s] ",
                        timestamp, level_names[level], module ? module : "core");
+    size_t prefix_len = 0;
 
-    vsnprintf(buffer + len, sizeof(buffer) - len, fmt, ap);
+    if (len < 0) {
+        snprintf(buffer, sizeof(buffer), "%s", message);
+    } else {
+        if (len >= (int)sizeof(buffer)) {
+            prefix_len = sizeof(buffer) - 1;
+        } else if (len > 0) {
+            prefix_len = (size_t)len;
+        }
+
+        snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
+    }
 
     /* Log to console with colors */
     if (level >= LOG_WARNING) {
@@ -139,6 +368,8 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
     if ((level == LOG_ERROR || level == LOG_CRITICAL) && error_fd >= 0) {
         dprintf(error_fd, "%s\n", buffer);
     }
+
+    mirror_to_syslog(level, module, message);
 }
 
 void log_debug(const char *module, const char *fmt, ...) {
