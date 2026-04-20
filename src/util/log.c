@@ -130,10 +130,11 @@ static int acquire_syslog_lock(int fd) {
         }
 
         struct timespec sleep_time;
+        struct timespec remaining_time;
         sleep_time.tv_sec = 0;
         sleep_time.tv_nsec = retry_delay_ns;
-        while (nanosleep(&sleep_time, &sleep_time) != 0 && errno == EINTR) {
-            /* nanosleep stores remaining time in sleep_time on EINTR. */
+        while (nanosleep(&sleep_time, &remaining_time) != 0 && errno == EINTR) {
+            sleep_time = remaining_time;
         }
 
         if (retry_delay_ns < SYSLOG_LOCK_MAX_BACKOFF_NS) {
@@ -195,7 +196,7 @@ static void mirror_to_syslog_file(log_level_t level, const char *module, const c
 
     if (acquire_syslog_lock(fd) == 0) {
         lock_acquired = 1;
-    } else if (errno != ETIMEDOUT) {
+    } else {
         close(fd);
         return;
     }
@@ -335,11 +336,10 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
                        timestamp, level_names[level], module ? module : "core");
     size_t prefix_len = 0;
 
-    if (len > 0) {
+    if (len > 0 && len < (int)sizeof(buffer)) {
         prefix_len = (size_t)len;
-        if (prefix_len >= sizeof(buffer)) {
-            prefix_len = sizeof(buffer) - 1;
-        }
+    } else if (len >= (int)sizeof(buffer)) {
+        prefix_len = sizeof(buffer) - 1;
     }
 
     snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
