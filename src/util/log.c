@@ -177,6 +177,13 @@ static void mirror_to_syslog_file(log_level_t level, const char *module, const c
         return;
     }
 
+    if (lseek(fd, 0, SEEK_END) < 0) {
+        close(lock_fd);
+        unlink(syslog_lock_path);
+        close(fd);
+        return;
+    }
+
     (void)write_syslog_payload(fd, payload, (size_t)len);
     close(lock_fd);
     unlink(syslog_lock_path);
