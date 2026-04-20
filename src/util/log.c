@@ -4,8 +4,6 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -14,10 +12,6 @@ static log_level_t current_level = LOG_INFO;
 static char *log_dir = NULL;
 static int log_fd = -1;
 static int error_fd = -1;
-static int syslog_fd = -1;
-static const useconds_t syslog_connect_retry_delay_us = 10000;
-static const int syslog_connect_retry_attempts = 20;
-
 static const char *level_names[] = {
     "DEBUG",
     "INFO",
@@ -35,7 +29,8 @@ static const char *level_colors[] = {
 };
 
 static const char *color_reset = "\033[0m";
-static const char *syslog_socket_path = "/dev/log";
+static const char *syslog_socket_path = "/run/log/yap.inbox";
+static const char *syslog_log_path = "/var/log/system.log";
 
 static int map_syslog_priority(log_level_t level) {
     int severity = 6; /* LOG_INFO */
@@ -61,74 +56,57 @@ static int map_syslog_priority(log_level_t level) {
     return (3 << 3) | severity; /* LOG_DAEMON */
 }
 
-static void close_syslog_socket(void) {
-    if (syslog_fd >= 0) {
-        close(syslog_fd);
-        syslog_fd = -1;
-    }
-}
-
 static int connect_syslog_socket(void) {
-    struct sockaddr_un addr;
-    int fd;
-    int flags;
-
-    if (syslog_fd >= 0) {
-        return 0;
+    if (access(syslog_socket_path, F_OK) != 0) {
+        return -1;
     }
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = open(syslog_socket_path, O_WRONLY | O_APPEND);
     if (fd < 0) {
         return -1;
     }
 
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    }
+    return fd;
+}
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", syslog_socket_path);
+static int write_syslog_payload(int fd, const char *payload, size_t len) {
+    size_t offset = 0;
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        close(fd);
+    while (offset < len) {
+        ssize_t written = write(fd, payload + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
         return -1;
     }
 
-    syslog_fd = fd;
     return 0;
 }
 
-static int write_syslog_payload(const char *payload, size_t len) {
-    int attempt;
-    size_t offset = 0;
+static void mirror_to_syslog_file(const char *payload, size_t len) {
+    int fd;
+    struct stat st;
 
-    for (attempt = 0; attempt < syslog_connect_retry_attempts; attempt++) {
-        ssize_t written = write(syslog_fd, payload + offset, len - offset);
-        if (written > 0) {
-            offset += (size_t)written;
-            if (offset >= len) {
-                return 0;
-            }
-            usleep(syslog_connect_retry_delay_us);
-            continue;
-        }
-        if (written == 0) {
-            return 0;
-        }
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS) {
-            return -1;
-        }
-        usleep(syslog_connect_retry_delay_us);
+    if (stat(syslog_log_path, &st) != 0 || st.st_size == 0) {
+        return;
     }
 
-    return -1;
+    fd = open(syslog_log_path, O_WRONLY | O_APPEND);
+    if (fd < 0) {
+        return;
+    }
+
+    (void)write_syslog_payload(fd, payload, len);
+    close(fd);
 }
 
 static void mirror_to_syslog(log_level_t level, const char *module, const char *message) {
     char payload[1024];
+    int fd;
     int len;
 
     len = snprintf(
@@ -147,18 +125,13 @@ static void mirror_to_syslog(log_level_t level, const char *module, const char *
         len = (int)sizeof(payload) - 1;
     }
 
-    if (connect_syslog_socket() != 0) {
-        return;
+    fd = connect_syslog_socket();
+    if (fd >= 0) {
+        (void)write_syslog_payload(fd, payload, (size_t)len);
+        close(fd);
     }
 
-    if (write_syslog_payload(payload, (size_t)len) == 0) {
-        return;
-    }
-
-    close_syslog_socket();
-    if (connect_syslog_socket() == 0 && write_syslog_payload(payload, (size_t)len) == 0) {
-        return;
-    }
+    mirror_to_syslog_file(payload, (size_t)len);
 }
 
 static int ensure_dir_recursive(const char *path, mode_t mode) {
@@ -376,8 +349,6 @@ void log_cleanup(void) {
         close(error_fd);
         error_fd = -1;
     }
-
-    close_syslog_socket();
 
     if (log_dir) {
         free(log_dir);
