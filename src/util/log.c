@@ -35,6 +35,11 @@ static const char *syslog_socket_path = "/run/log/yap.inbox";
 static const char *syslog_file_name = "claw.log";
 static const char *syslog_log_path = "/var/log/system.log";
 static const char *syslog_ready_path = "/run/log/yap.ready";
+enum {
+    SYSLOG_LOCK_MAX_RETRIES = 8,
+    SYSLOG_LOCK_INITIAL_BACKOFF_NS = 1000000L,
+    SYSLOG_LOCK_MAX_BACKOFF_NS = 64000000L
+};
 
 static int map_syslog_priority(log_level_t level) {
     int severity = 6; /* LOG_INFO */
@@ -112,10 +117,10 @@ static int write_syslog_payload(int fd, const char *payload, size_t len) {
 }
 
 static int acquire_syslog_lock(int fd) {
-    long backoff_ns = 1000000L;
+    long retry_delay_ns = SYSLOG_LOCK_INITIAL_BACKOFF_NS;
     int attempt;
 
-    for (attempt = 0; attempt < 8; ++attempt) {
+    for (attempt = 0; attempt < SYSLOG_LOCK_MAX_RETRIES; ++attempt) {
         if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
             return 0;
         }
@@ -126,13 +131,13 @@ static int acquire_syslog_lock(int fd) {
 
         struct timespec sleep_time;
         sleep_time.tv_sec = 0;
-        sleep_time.tv_nsec = backoff_ns;
+        sleep_time.tv_nsec = retry_delay_ns;
         while (nanosleep(&sleep_time, &sleep_time) != 0 && errno == EINTR) {
-            /* Retry nanosleep with remaining time after signal interruption. */
+            /* nanosleep stores remaining time in sleep_time on EINTR. */
         }
 
-        if (backoff_ns < 64000000L) {
-            backoff_ns *= 2;
+        if (retry_delay_ns < SYSLOG_LOCK_MAX_BACKOFF_NS) {
+            retry_delay_ns *= 2;
         }
     }
 
