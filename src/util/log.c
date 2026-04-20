@@ -128,6 +128,7 @@ static int acquire_syslog_lock(int fd) {
         sleep_time.tv_sec = 0;
         sleep_time.tv_nsec = backoff_ns;
         while (nanosleep(&sleep_time, &sleep_time) != 0 && errno == EINTR) {
+            /* Retry nanosleep with remaining time after signal interruption. */
         }
 
         if (backoff_ns < 64000000L) {
@@ -190,6 +191,14 @@ static void mirror_to_syslog_file(log_level_t level, const char *module, const c
     if (acquire_syslog_lock(fd) == 0) {
         lock_acquired = 1;
     } else if (errno != ETIMEDOUT) {
+        close(fd);
+        return;
+    }
+
+    if (lseek(fd, 0, SEEK_END) < 0) {
+        if (lock_acquired) {
+            flock(fd, LOCK_UN);
+        }
         close(fd);
         return;
     }
