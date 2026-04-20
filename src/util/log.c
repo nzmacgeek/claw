@@ -336,13 +336,17 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
                        timestamp, level_names[level], module ? module : "core");
     size_t prefix_len = 0;
 
-    if (len > 0 && len < (int)sizeof(buffer)) {
-        prefix_len = (size_t)len;
-    } else if (len >= (int)sizeof(buffer)) {
-        prefix_len = sizeof(buffer) - 1;
-    }
+    if (len < 0) {
+        snprintf(buffer, sizeof(buffer), "%s", message);
+    } else {
+        if (len > 0 && len < (int)sizeof(buffer)) {
+            prefix_len = (size_t)len;
+        } else if (len >= (int)sizeof(buffer)) {
+            prefix_len = sizeof(buffer) - 1;
+        }
 
-    snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
+        snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
+    }
 
     /* Log to console with colors */
     if (level >= LOG_WARNING) {
