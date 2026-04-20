@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -34,7 +35,6 @@ static const char *syslog_socket_path = "/run/log/yap.inbox";
 static const char *syslog_file_name = "claw.log";
 static const char *syslog_log_path = "/var/log/system.log";
 static const char *syslog_ready_path = "/run/log/yap.ready";
-static const char *syslog_lock_path = "/run/log/yap.system.lock";
 
 static int map_syslog_priority(log_level_t level) {
     int severity = 6; /* LOG_INFO */
@@ -111,17 +111,32 @@ static int write_syslog_payload(int fd, const char *payload, size_t len) {
     return 0;
 }
 
-static int acquire_syslog_lock(void) {
-    for (;;) {
-        int fd = open(syslog_lock_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-        if (fd >= 0) {
-            return fd;
+static int acquire_syslog_lock(int fd) {
+    long backoff_ns = 1000000L;
+    int attempt;
+
+    for (attempt = 0; attempt < 8; ++attempt) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            return 0;
         }
-        if (errno != EEXIST) {
+
+        if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR) {
             return -1;
         }
-        usleep(1000);
+
+        struct timespec sleep_time;
+        sleep_time.tv_sec = 0;
+        sleep_time.tv_nsec = backoff_ns;
+        while (nanosleep(&sleep_time, &sleep_time) != 0 && errno == EINTR) {
+        }
+
+        if (backoff_ns < 64000000L) {
+            backoff_ns *= 2;
+        }
     }
+
+    errno = ETIMEDOUT;
+    return -1;
 }
 
 static void mirror_to_syslog_file(log_level_t level, const char *module, const char *message) {
@@ -132,6 +147,7 @@ static void mirror_to_syslog_file(log_level_t level, const char *module, const c
     struct tm *tm_info;
     int fd;
     int len;
+    int lock_acquired = 0;
 
     if (access(syslog_ready_path, F_OK) != 0 || access(syslog_log_path, F_OK) != 0) {
         return;
@@ -171,22 +187,17 @@ static void mirror_to_syslog_file(log_level_t level, const char *module, const c
         return;
     }
 
-    int lock_fd = acquire_syslog_lock();
-    if (lock_fd < 0) {
-        close(fd);
-        return;
-    }
-
-    if (lseek(fd, 0, SEEK_END) < 0) {
-        close(lock_fd);
-        unlink(syslog_lock_path);
+    if (acquire_syslog_lock(fd) == 0) {
+        lock_acquired = 1;
+    } else if (errno != ETIMEDOUT) {
         close(fd);
         return;
     }
 
     (void)write_syslog_payload(fd, payload, (size_t)len);
-    close(lock_fd);
-    unlink(syslog_lock_path);
+    if (lock_acquired) {
+        flock(fd, LOCK_UN);
+    }
     close(fd);
 }
 
@@ -308,8 +319,16 @@ static void log_vprintf(log_level_t level, const char *module, const char *fmt, 
     vsnprintf(message, sizeof(message), fmt, ap);
     int len = snprintf(buffer, sizeof(buffer), "[%s] [%-8s] [%-15s] ",
                        timestamp, level_names[level], module ? module : "core");
+    size_t prefix_len = 0;
 
-    snprintf(buffer + len, sizeof(buffer) - (size_t)len, "%s", message);
+    if (len > 0) {
+        prefix_len = (size_t)len;
+        if (prefix_len >= sizeof(buffer)) {
+            prefix_len = sizeof(buffer) - 1;
+        }
+    }
+
+    snprintf(buffer + prefix_len, sizeof(buffer) - prefix_len, "%s", message);
 
     /* Log to console with colors */
     if (level >= LOG_WARNING) {

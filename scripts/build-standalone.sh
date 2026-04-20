@@ -63,10 +63,11 @@ fi
 if [[ -n "$SYSROOT" ]]; then
     log_info "Sysroot: $SYSROOT"
 fi
-if [[ -z "$HOST_TRIPLET" ]]; then
-    HOST_TRIPLET="$("$MUSL_CC" -dumpmachine)"
+if [[ -n "$HOST_TRIPLET" ]]; then
+    log_info "Host triplet override: $HOST_TRIPLET"
+else
+    log_info "Host triplet: (auto-detected by configure)"
 fi
-log_info "Host triplet: $HOST_TRIPLET"
 
 # --- Generate autotools files if needed ---
 if [[ ! -f "$PROJECT_ROOT/configure" ]]; then
@@ -83,7 +84,6 @@ cd "$BUILD_DIR"
 # --- Configure for BlueyOS (musl + static, production paths) ---
 log_info "Configuring with musl-gcc..."
 configure_args=(
-    "--host=$HOST_TRIPLET"
     --with-musl
     --enable-static-binary
     --disable-werror
@@ -100,6 +100,10 @@ fi
 
 if [[ -n "$SYSROOT" ]]; then
     configure_args+=("--with-sysroot=$SYSROOT")
+fi
+
+if [[ -n "$HOST_TRIPLET" ]]; then
+    configure_args+=("--host=$HOST_TRIPLET")
 fi
 
 "$PROJECT_ROOT/configure" "${configure_args[@]}"

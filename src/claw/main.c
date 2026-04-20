@@ -261,6 +261,9 @@ static void setup_signal_handlers(void) {
      * BlueyOS signal delivery is not stable enough yet for init to rely on it.
      * Reap children from the main loop instead so the login path stays usable.
      */
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT,  SIG_IGN);
+    signal(SIGHUP,  SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
 #endif
 }
