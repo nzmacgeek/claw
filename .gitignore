@@ -74,6 +74,11 @@ dkms.conf
 /include/claw-version.h
 /include/claw-build.h
 
+# config.sub may be copied here by the baker build system as a workaround
+# when build-aux/config.sub is absent; it is not a source file.
+/config.sub
+/config.guess
+
 # Old hand-written Makefile output directory (replaced by autotools)
 /build/
 
