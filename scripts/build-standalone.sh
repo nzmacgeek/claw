@@ -63,8 +63,13 @@ fi
 if [[ -n "$SYSROOT" ]]; then
     log_info "Sysroot: $SYSROOT"
 fi
+# Auto-detect HOST_TRIPLET from the musl-gcc compiler if not already set
+if [[ -z "$HOST_TRIPLET" && -n "$MUSL_CC" ]]; then
+    HOST_TRIPLET="$("$MUSL_CC" -dumpmachine 2>/dev/null)" || true
+fi
+
 if [[ -n "$HOST_TRIPLET" ]]; then
-    log_info "Host triplet override: $HOST_TRIPLET"
+    log_info "Host triplet: $HOST_TRIPLET"
 else
     log_info "Host triplet: (auto-detected by configure)"
 fi
@@ -103,7 +108,11 @@ if [[ -n "$SYSROOT" ]]; then
 fi
 
 if [[ -n "$HOST_TRIPLET" ]]; then
-    configure_args+=("--host=$HOST_TRIPLET")
+    if "$PROJECT_ROOT/config.sub" "$HOST_TRIPLET" >/dev/null 2>&1; then
+        configure_args+=("--host=$HOST_TRIPLET")
+    else
+        log_warn "Host triplet '$HOST_TRIPLET' not recognized by config.sub, continuing without --host"
+    fi
 fi
 
 "$PROJECT_ROOT/configure" "${configure_args[@]}"
