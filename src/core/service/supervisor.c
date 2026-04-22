@@ -396,6 +396,18 @@ void supervisor_handle_exit(supervisor_t *sv, pid_t pid, int wstatus) {
 
     log_service_stopped(svc->name, exit_code);
 
+    /* Exit code 127 means execve itself failed (binary missing, unsupported ELF
+     * type, bad interpreter, etc).  Restarting will not fix this — mark the
+     * service as permanently failed and leave it there. */
+    if (exit_code == 127) {
+        svc->state = SERVICE_FAILED;
+        log_error("supervisor",
+                  "Service %s: exec failed (exit 127) — binary missing or unsupported "
+                  "ELF type; not restarting",
+                  svc->name);
+        return;
+    }
+
     /* State machine transition */
     if (svc->state == SERVICE_DEACTIVATING) {
         svc->state = SERVICE_INACTIVE;
