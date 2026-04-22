@@ -63,8 +63,13 @@ fi
 if [[ -n "$SYSROOT" ]]; then
     log_info "Sysroot: $SYSROOT"
 fi
+# Auto-detect HOST_TRIPLET from the musl-gcc compiler if not already set
+if [[ -z "$HOST_TRIPLET" && -n "$MUSL_CC" ]]; then
+    HOST_TRIPLET="$("$MUSL_CC" -dumpmachine 2>/dev/null)" || true
+fi
+
 if [[ -n "$HOST_TRIPLET" ]]; then
-    log_info "Host triplet override: $HOST_TRIPLET"
+    log_info "Host triplet: $HOST_TRIPLET"
 else
     log_info "Host triplet: (auto-detected by configure)"
 fi
@@ -103,7 +108,27 @@ if [[ -n "$SYSROOT" ]]; then
 fi
 
 if [[ -n "$HOST_TRIPLET" ]]; then
-    configure_args+=("--host=$HOST_TRIPLET")
+    # Locate config.sub: check build-aux/ (where autoreconf puts it), then the
+    # system automake installation, then skip validation.
+    _config_sub=""
+    if [[ -x "$PROJECT_ROOT/build-aux/config.sub" ]]; then
+        _config_sub="$PROJECT_ROOT/build-aux/config.sub"
+    else
+        _config_sub="$(find /usr/share/automake* -name config.sub 2>/dev/null | sort | tail -1)"
+    fi
+
+    if [[ -n "$_config_sub" && -x "$_config_sub" ]]; then
+        if "$_config_sub" "$HOST_TRIPLET" >/dev/null 2>&1; then
+            configure_args+=("--host=$HOST_TRIPLET")
+        else
+            log_warn "Host triplet '$HOST_TRIPLET' not recognized by config.sub, continuing without --host"
+        fi
+    else
+        # configure.ac does not use AC_CANONICAL_HOST so no canonicalization
+        # is needed; pass the triplet directly.
+        log_info "config.sub not found; passing --host=$HOST_TRIPLET unvalidated"
+        configure_args+=("--host=$HOST_TRIPLET")
+    fi
 fi
 
 "$PROJECT_ROOT/configure" "${configure_args[@]}"
